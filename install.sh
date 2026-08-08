@@ -29,12 +29,19 @@ CONFIG_DIR="/etc"                     # 配置目标目录
 # ============ 工具注册表 ============
 # 每行一个工具: name|script|env_template|env_target|cron_line
 #   name        工具名（install/update/uninstall 参数）
-#   script      install.sh 里要下载的脚本文件名（相对仓库根）
+#   script      install.sh 里要下载的脚本文件名（相对仓库根，按分类目录组织）
 #   env_template 配置模板文件名（相对仓库根，可为空 = 无配置）
 #   env_target  配置安装目标路径（env_template 为空时忽略）
 #   cron_line   建议的 crontab 行（可为空 = 不提示；含特殊字符需注意转义）
+#
+# 分类目录约定（新增脚本按功能域归类）:
+#   monitor/   监控类（流量/资源/服务状态）
+#   network/   网络类（路由/隧道/分流）
+#   proxy/     代理类（xray/sing-box 等辅助脚本）
+#   utils/     通用工具（DDNS/证书/备份等）
+#   backup/    备份类
 TOOLS=(
-  "vnstat-monitor|vnstat-monitor/vnstat-monitor.sh|vnstat-monitor/vnstat-monitor.env.example|${CONFIG_DIR}/vnstat-monitor.env|*/15 * * * * /usr/local/bin/vnstat-monitor/vnstat-monitor.sh >/dev/null 2>&1"
+  "vnstat-monitor|monitor/vnstat-monitor/vnstat-monitor.sh|monitor/vnstat-monitor/vnstat-monitor.env.example|${CONFIG_DIR}/vnstat-monitor.env|*/15 * * * * /usr/local/bin/vnstat-monitor/vnstat-monitor.sh >/dev/null 2>&1"
 )
 
 # ============ 辅助函数 ============
