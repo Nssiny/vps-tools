@@ -140,6 +140,14 @@ main() {
 
   case "$action" in
     install|update)
+      # root 检测：非 root 明确提示（管道方式无法自动 sudo 重执行，统一引导）
+      if [[ $EUID -ne 0 ]]; then
+        log_err "需要 root 权限（安装目标 ${INSTALL_DIR} 和 ${CONFIG_DIR} 需 root 写入）。"
+        log_err "推荐管道方式（自动以 root 运行）："
+        echo "    curl -sSL https://raw.githubusercontent.com/${GH_USER}/${GH_REPO}/${GH_BRANCH}/install.sh | sudo bash -s -- ${action}${tool:+ ${tool}}"
+        log_err "或本地执行：sudo bash install.sh ${action}${tool:+ ${tool}}"
+        exit 1
+      fi
       if [[ -n "$tool" ]]; then
         local line
         if line=$(find_tool "$tool"); then

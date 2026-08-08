@@ -5,19 +5,25 @@
 ## 快速开始
 
 ```bash
-# 安装全部工具
-bash <(curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh)
+# 推荐：管道方式（自动以 root 运行，兼容普通用户登录的 VPS）
+curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh | sudo bash -s -- install vnstat-monitor
 
-# 安装/更新指定工具
-bash <(curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh) install vnstat-monitor
-bash <(curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh) update vnstat-monitor
+# 本地已下载时
+sudo bash install.sh install vnstat-monitor
 
-# 卸载
-bash <(curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh) uninstall vnstat-monitor
+# 安装/更新指定工具（重复执行即覆盖更新，配置保留）
+curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh | sudo bash -s -- install vnstat-monitor
+curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh | sudo bash -s -- update vnstat-monitor
 
-# 查看可用工具
+# 卸载（脚本删除，配置保留防误删密钥）
+curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh | sudo bash -s -- uninstall vnstat-monitor
+
+# 查看可用工具（list 不需要 root）
 bash <(curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh) list
 ```
+
+> 非 root 直接运行 install/update/uninstall 会提示需要 root 并给出完整命令；`list` 无需 root。
+> 说明：`bash <(curl ...)` 进程替换需要 bash 且目标目录可写；管道方式 `curl | sudo bash -s --` 更通用（普通用户 VPS 用 sudo 提升），两者等价。
 
 ## 安装器行为
 
