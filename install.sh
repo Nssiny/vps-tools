@@ -105,9 +105,9 @@ install_tool() {  # $1=tool line
     fi
   fi
 
-  # cron 提示
+  # cron 提示（必须 root crontab：脚本 source /etc/<tool>.env(600) 且写 /var/lib、改 /etc 配置、可能 shutdown）
   if [[ -n "$cron" ]]; then
-    log_info "建议添加 cron（crontab -e）:"
+    log_info "建议添加 cron —— 用 root crontab（sudo crontab -e），普通用户 crontab 读不到 /etc 配置且无写权限:"
     echo "    $cron"
   fi
 

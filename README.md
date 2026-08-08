@@ -29,7 +29,7 @@ bash <(curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install
 
 - 脚本下载到 `/usr/local/bin/<tool>/`，与系统文件隔离，卸载即删目录
 - 首次安装自动生成配置模板 `/etc/<tool>.env`（`chmod 600`，已存在不覆盖），**需手动填入真实密钥**
-- cron 条目只提示不自动写（避免破坏现有 crontab）
+- cron 条目只提示不自动写；**必须用 root crontab（`sudo crontab -e`）**——脚本要 source `/etc/<tool>.env`（600 权限）、写 `/var/lib`、改 `/etc` 配置、可能触发关机，普通用户 crontab 无权限
 - 重复 `install` = 覆盖更新，幂等
 
 ## 仓库结构（按功能域分类）
