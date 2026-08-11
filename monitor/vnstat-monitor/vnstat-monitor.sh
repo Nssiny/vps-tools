@@ -14,7 +14,7 @@
 #   vnstat-monitor -v, --version   # 显示版本号
 #   vnstat-monitor -h, --help      # 显示用法（同 help）
 
-VERSION="1.1.0"   # 发布新功能时递增（配合 vps-tools 工具约定：新增工具必须支持 -v/-h）
+VERSION="1.1.1"   # 发布新功能时递增（配合 vps-tools 工具约定：新增工具必须支持 -v/-h）
 
 # ============ systemd timer 管理（替代 crontab） ============
 # 用法见文件头。设计：频率持久化到 /etc/vnstat-monitor.env 的 INTERVAL_MINUTES，
@@ -182,8 +182,10 @@ interactive_config() {  # 返回 0
   done
   cfg_set CALC_MODE "$v"
   # RESET_DAY 1-28
+  # 注意：会同步写入 vnstat.conf 的 MonthRotate；vnstat 手册明确改值不重算已有数据，
+  # 中途修改会导致当月数据归属分裂（旧周期数据仍留在原月份行）
   while :; do
-    v="$(prompt_value "流量重置日（1-28）" "$(cfg_get RESET_DAY)" "1")"
+    v="$(prompt_value "流量重置日（1-28，改动会同步 vnstat MonthRotate，当月数据不重算）" "$(cfg_get RESET_DAY)" "1")"
     [[ "$v" =~ ^[0-9]+$ ]] && (( v >= 1 && v <= 28 )) && break || echo "Error: 无效重置日: $v（需 1-28）" >&2
   done
   cfg_set RESET_DAY "$v"
@@ -458,17 +460,33 @@ if [[ $? -ne 0 || -z "$JSON_OUT" ]]; then
     exit 1
 fi
 
-# 计费周期基准用系统当前月份（2026-08-12 修复：不依赖 vnstat month 数组 last，
-# 避免 vnstat 月份错位/MonthRotate 变更导致周期字符串漂移 → 误判跨周期发新卡）
+# 计费周期：按 RESET_DAY（vnstat MonthRotate）计算归属月，而非系统自然月。
+# vnstat 手册：MonthRotate=N 时，day < N 归上月，day >= N 归本月（如 MonthRotate=7，
+# 2/1-2/6 算 1 月）；改值不会重算已有数据。
+# 2026-08-12 修复：原实现直接取系统月，RESET_DAY≠1 时会取错 vnstat month 行。
+# 兼容 busybox（不用 %-m / date -d，用 sed 去零 + 纯算术跨年）。
 BILLING_YEAR=$(date +%Y)
 BILLING_MONTH=$(date +%m | sed 's/^0//')
+_DAY=$(date +%d | sed 's/^0//')
+if [[ "$RESET_DAY" =~ ^[0-9]+$ ]] && (( RESET_DAY >= 2 && RESET_DAY <= 28 )); then
+    if (( _DAY < RESET_DAY )); then
+        # 归属上月（含跨年）
+        if (( BILLING_MONTH == 1 )); then
+            BILLING_YEAR=$((BILLING_YEAR - 1))
+            BILLING_MONTH=12
+        else
+            BILLING_MONTH=$((BILLING_MONTH - 1))
+        fi
+    fi
+fi
 
-# 流量数据：优先取当前自然月的 vnstat 行；无则回退 month 数组最后一条
+# 流量数据：取归属月对应的 vnstat month 行；无则视为 0（新周期刚开始/无数据）。
+# 不回退 last：跨周期后旧行不应再显示（RESET_DAY≠1 时 last 可能是上月累计）。
 MONTHS=$(echo "$JSON_OUT" | jq -c '.interfaces[0].traffic.month // []' 2>/dev/null)
 LATEST_MONTH=$(echo "$MONTHS" | jq -c --argjson y "$BILLING_YEAR" --argjson m "$BILLING_MONTH" \
     '[ .[] | select(.date.year == $y and .date.month == $m) ] | last' 2>/dev/null)
 if [[ -z "$LATEST_MONTH" || "$LATEST_MONTH" == "null" ]]; then
-    LATEST_MONTH=$(echo "$MONTHS" | jq -c 'sort_by(.date.year, .date.month) | last' 2>/dev/null)
+    LATEST_MONTH="null"
 fi
 
 RX_BYTES=0
