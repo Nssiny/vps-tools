@@ -36,7 +36,7 @@
 #   配置     /etc/xray-deploy/config.json + state.json（600）
 #   服务     systemd: /etc/systemd/system/xray-deploy.service
 #             OpenRC: /etc/init.d/xray-deploy
-#   定时     /etc/cron.weekly/xray-geo-update
+#   geo 更新 手动: xray-deploy update-geo（或自行配 systemd timer）
 # ============================================================
 
 set -euo pipefail
@@ -450,15 +450,6 @@ update_geo() {
   [[ -z "$quiet" ]] && log_info "geo 数据已更新（MetaCubeX/meta-rules-dat）"
 }
 
-install_cron_weekly() {
-  cat > "/etc/cron.weekly/xray-geo-update" <<EOF
-#!/bin/sh
-${SCRIPT_DIR}/xray-deploy.sh update-geo --quiet >/dev/null 2>&1 || exit 1
-EOF
-  chmod +x "/etc/cron.weekly/xray-geo-update"
-  log_info "已写入每周定时更新: /etc/cron.weekly/xray-geo-update"
-}
-
 # ============ 协议注册表（可扩展） ============
 # 新增协议步骤:
 #   1. PROTO_REGISTRY 加一行: name|显示名|服务二进制
@@ -782,8 +773,8 @@ cmd_install() {
   install_service_file
   rebuild_and_reload
   service_start
-  install_cron_weekly
   log_info "安装完成！运行 'xray-deploy.sh info' 查看节点信息"
+  log_info "geo 数据更新: 运行 'xray-deploy update-geo'（手动，或自行配 systemd timer）"
 }
 
 # ============ 升级 ============

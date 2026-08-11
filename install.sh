@@ -14,7 +14,7 @@
 #   - 脚本下载到 /usr/local/lib/vps-tools/<tool>/ 下，与系统文件隔离，卸载干净
 #   - 每个工具自动生成命令入口 /usr/local/bin/<tool>，直接以工具名调用
 #   - 配置模板首次安装时复制到 /etc/<tool>.env（已存在则不覆盖），真实密钥由用户填写
-#   - 提示 cron 添加（不自动改 crontab，避免破坏现有条目）
+#   - 定时调度统一用 systemd timer（工具 setup 子命令管理），不使用 crontab
 #   - 幂等：重复 install = 覆盖更新
 #   - 首次交互运行自动安装管理命令 /usr/local/bin/vps-tools，之后直接 vps-tools 进入菜单
 #   - 管道方式（curl | sudo bash）也能交互：stdin 被占用时从 /dev/tty 读取输入
@@ -37,14 +37,14 @@ CMD_DIR="/usr/local/bin"                 # 命令入口目录
 VPS_TOOLS_CMD="${CMD_DIR}/vps-tools"     # 管理命令入口
 
 # ============ 工具注册表 ============
-# 每行一个工具: name|script|env_template|env_target|cron_line|interactive_setup
+# 每行一个工具: name|script|env_template|env_target|interactive_setup
 #   name        工具名（install/update/uninstall 参数）
 #   script      install.sh 里要下载的脚本文件名（相对仓库根，按分类目录组织）
 #   env_template 配置模板文件名（相对仓库根，可为空 = 无配置）
 #   env_target  配置安装目标路径（env_template 为空时忽略）
-#   cron_line   建议的 crontab 行（可为空 = 不提示；含特殊字符需注意转义）
 #   interactive_setup 安装后是否调用交互式 setup（1=是，工具脚本需支持 setup 子命令；
-#                     通常配合 systemd timer 替代 crontab；无 TTY 时跳过并提示手动运行）
+#                     配合 systemd timer 管理定时；无 TTY 时跳过并提示手动运行）
+# 注：定时调度统一用 systemd timer（工具脚本 setup 子命令管理），不使用 crontab。
 #
 # 分类目录约定（新增脚本按功能域归类）:
 #   monitor/   监控类（流量/资源/服务状态）
@@ -53,7 +53,7 @@ VPS_TOOLS_CMD="${CMD_DIR}/vps-tools"     # 管理命令入口
 #   utils/     通用工具（DDNS/证书/备份等）
 #   backup/    备份类
 TOOLS=(
-  "vnstat-monitor|monitor/vnstat-monitor/vnstat-monitor.sh|monitor/vnstat-monitor/vnstat-monitor.env.example|${CONFIG_DIR}/vnstat-monitor.env||1"
+  "vnstat-monitor|monitor/vnstat-monitor/vnstat-monitor.sh|monitor/vnstat-monitor/vnstat-monitor.env.example|${CONFIG_DIR}/vnstat-monitor.env|1"
   "xray-deploy|proxy/xray-deploy/xray-deploy.sh|||0"
 )
 
@@ -110,13 +110,12 @@ list_tools() {
 
 # ============ 核心操作 ============
 install_tool() {  # $1=tool line
-  local line="$1" name script env_tpl env_tgt cron setup_flag
+  local line="$1" name script env_tpl env_tgt setup_flag
   name=$(tool_field "$line" 1)
   script=$(tool_field "$line" 2)
   env_tpl=$(tool_field "$line" 3)
   env_tgt=$(tool_field "$line" 4)
-  cron=$(tool_field "$line" 5)
-  setup_flag=$(tool_field "$line" 6)
+  setup_flag=$(tool_field "$line" 5)
 
   local dest="${INSTALL_DIR}/${name}"
   mkdir -p "$dest"
@@ -159,7 +158,7 @@ EOF
     fi
   fi
 
-  # 交互式 setup（替代 cron 提示）：工具自带 setup 子命令（如 systemd timer 管理）
+  # 交互式 setup：工具自带 setup 子命令（systemd timer 管理等）
   # 仅初次安装 / 卸载重装（env 新生成）触发交互；更新（env 已存在）保留原配置
   if [[ "$setup_flag" == "1" ]]; then
     if [[ "$env_was_created" == "1" ]]; then
@@ -172,10 +171,6 @@ EOF
     else
       log_info "${name} 配置已存在（更新），保留原配置。如需修改: sudo ${name} setup"
     fi
-  elif [[ -n "$cron" ]]; then
-    # cron 提示（必须 root crontab：脚本 source /etc/<tool>.env(600) 且写 /var/lib、改 /etc 配置、可能 shutdown）
-    log_info "建议添加 cron —— 用 root crontab（sudo crontab -e），普通用户 crontab 读不到 /etc 配置且无写权限:"
-    echo "    $cron"
   fi
 
   log_info "${name} 安装完成。"
@@ -202,7 +197,7 @@ uninstall_tool() {  # $1=tool line
     log_warn "配置文件保留: ${env_tgt}（如需删除: rm $env_tgt）"
   fi
 
-  log_info "请手动删除 crontab 中的 ${name} 条目（如有）。"
+  log_info "如需移除定时，运行: sudo ${name} uninstall-timer（systemd timer）"
 }
 
 # ============ 交互输入 ============

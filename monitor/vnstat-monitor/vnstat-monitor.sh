@@ -529,7 +529,7 @@ if awk -v o="$OFFSET_GB" 'BEGIN {exit (o != 0 ? 0 : 1)}'; then
 fi
 
 # 8. Telegram API 请求封装 (采用 data-urlencode 避免换行丢失)
-# --max-time 30: 防止网络挂死导致 cron 重叠/竞态（2026-08-08 修复）
+# --max-time 30: 防止网络挂死导致定时任务重叠/竞态（2026-08-08 修复）
 send_msg() {
     curl -s --max-time 30 -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
         -d "chat_id=${TG_CHAT_ID}" \
@@ -586,7 +586,7 @@ if [[ "$STORED_MONTH" == "$CURRENT_CYCLE_STR" && -n "$STORED_MSG_ID" ]]; then
                 echo "$(date '+%F %T') degrade: message deleted, new id=$NEW_MSG_ID" >> "$LOG_FILE"
             fi
         else
-            # 网络类/其他错误：跳过本轮，保留旧 message_id，下次 cron 再试
+            # 网络类/其他错误：跳过本轮，保留旧 message_id，下次定时再试
             echo "$(date '+%F %T') skip: edit failed (not deletion): ${ERROR_DESC:-empty response}" >> "$LOG_FILE"
         fi
     fi

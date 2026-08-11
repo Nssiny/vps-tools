@@ -58,7 +58,7 @@ sudo bash install.sh install vnstat-monitor
 - 脚本下载到 `/usr/local/lib/vps-tools/<tool>/`，与系统文件隔离，卸载即删目录
 - 每个工具自动生成命令入口 `/usr/local/bin/<tool>`，**直接以工具名调用**（如 `vnstat-monitor`、`xray-deploy`、`vps-tools`）
 - 首次安装自动生成配置模板 `/etc/<tool>.env`（`chmod 600`，已存在不覆盖），**需手动填入真实密钥**
-- cron 条目只提示不自动写；**必须用 root crontab（`sudo crontab -e`）**——脚本要 source `/etc/<tool>.env`（600 权限）、写 `/var/lib`、改 `/etc` 配置、可能触发关机，普通用户 crontab 无权限
+- 定时调度统一用 **systemd timer**（工具 `setup` 子命令管理，如 `vnstat-monitor setup`），不使用 crontab
 - 重复 `install` = 覆盖更新，幂等
 
 ## 仓库结构（按功能域分类）
@@ -131,7 +131,7 @@ xray-deploy config show        # 查看服务端 config.json
 sudo xray-deploy config edit   # 编辑 config.json（保存后自动 xray -test 校验并重载）
 xray-deploy fallback-test      # 测试全部回落候选的握手延迟并排序（部署前选型/诊断用）
 xray-deploy fallback-test www.example.com   # 测试指定域名是否可作回落
-sudo xray-deploy update-geo    # 手动更新 geosite/geoip（脚本已配 /etc/cron.weekly/xray-geo-update 每周自动）
+sudo xray-deploy update-geo    # 手动更新 geosite/geoip（如需自动更新，可自行配 systemd timer）
 sudo xray-deploy upgrade       # 升级 Xray 二进制（失败自动回滚）
 sudo xray-deploy protocol add/remove/edit/list   # 多协议管理（端口/SNI/UUID）
 sudo xray-deploy status / restart / uninstall
