@@ -53,8 +53,10 @@ GEO_SOURCE="https://github.com/MetaCubeX/meta-rules-dat/releases/latest/download
 GITHUB_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
 
 # ============ 日志 ============
-log_info() { echo -e "\033[0;32m[INFO]\033[0m $*"; }
-log_warn() { echo -e "\033[0;33m[WARN]\033[0m $*"; }
+# 注意：log_info/log_warn 必须输出到 stderr！
+# 否则会被 $(select_fallback_domain) 等命令替换捕获，污染返回值（实测 bug：SNI 字段存了多行日志）
+log_info() { echo -e "\033[0;32m[INFO]\033[0m $*" >&2; }
+log_warn() { echo -e "\033[0;33m[WARN]\033[0m $*" >&2; }
 log_err()  { echo -e "\033[0;31m[ERROR]\033[0m $*" >&2; }
 
 die() { log_err "$*"; exit 1; }
@@ -231,14 +233,12 @@ port_in_use() {  # $1=port
 # ============ 回落域名候选（半自动） ============
 # 格式: domain|country|tier|备注
 # tier: 3=图书馆/大学/旅游局  4=社区测试过  5=大厂（默认跳过，不推荐）
+# 2026-08-11 实测清理：cambridge.org=TLSv1.2、tum.de=无ALPN h2、mit.edu=http/1.1 → 移除
 FALLBACK_CANDIDATES=(
-  "www.cambridge.org|GB|3|剑桥大学"
   "www.ox.ac.uk|GB|3|牛津大学"
   "www.harvard.edu|US|3|哈佛大学"
   "www.stanford.edu|US|3|斯坦福大学"
-  "www.mit.edu|US|3|MIT"
   "www.ethz.ch|CH|3|苏黎世联邦理工"
-  "www.tum.de|DE|3|慕尼黑工业大学"
   "www.loc.gov|US|3|美国国会图书馆"
   "www.bl.uk|GB|3|大英图书馆"
   "www.bnf.fr|FR|3|法国国家图书馆"
@@ -262,13 +262,15 @@ detect_server_country() {
 }
 
 # 测试回落域名: 返回 0=通过；输出原因到 stdout
+# 兼容 OpenSSL 1.1.1/3.x：3.x 的 s_client 输出 "New, TLSv1.3, Cipher is ..."，
+# 不再有 "Protocol  : TLSv1.3" 行；Server Temp Key 带 ", 253 bits" 后缀。
 test_fallback_domain() {
   local domain="$1" out code
   # TLS1.3 + H2 + X25519 + 非 Cloudflare + 证书有效
   out="$(echo | timeout 12 openssl s_client -connect "${domain}:443" -tls1_3 -alpn h2 -groups X25519 -servername "$domain" 2>&1 || true)"
-  grep -q "Protocol  : TLSv1.3" <<<"$out" || { echo "TLSv1.3 不支持"; return 1; }
-  grep -q "ALPN protocol: h2" <<<"$out" || { echo "不支持 H2"; return 1; }
-  grep -qi "Server Temp Key: X25519" <<<"$out" || { echo "未协商 X25519"; return 1; }
+  grep -qE "New, TLSv1\.3|Protocol  : TLSv1\.3" <<<"$out" || { echo "TLSv1.3 不支持"; return 1; }
+  grep -qE "ALPN protocol: h2" <<<"$out" || { echo "不支持 H2"; return 1; }
+  grep -qiE "Server Temp Key: X25519" <<<"$out" || { echo "未协商 X25519"; return 1; }
   grep -qi "cloudflare" <<<"$out" && { echo "Cloudflare CDN（不推荐）"; return 1; }
   grep -q "Verify return code: 0" <<<"$out" || { echo "证书校验失败"; return 1; }
   # 非跳转：HTTP 状态应为 2xx
