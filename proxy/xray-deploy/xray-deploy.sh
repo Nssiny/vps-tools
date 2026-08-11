@@ -308,6 +308,22 @@ test_fallback_domain() {
   return 0
 }
 
+# 测量 TLS 握手延迟（ms）：3 次采样取中位数，抗单次抖动
+measure_handshake_ms() {
+  local domain="$1" i t0 t1
+  local -a samples=()
+  for i in 1 2 3; do
+    t0="$(date +%s%N)"
+    echo | timeout 6 openssl s_client -connect "${domain}:443" -tls1_3 -servername "$domain" >/dev/null 2>&1
+    t1="$(date +%s%N)"
+    samples+=("$(( (t1 - t0) / 1000000 ))")
+  done
+  # 中位数（排序取中间）
+  local sorted
+  IFS=$'\n' sorted=($(printf '%s\n' "${samples[@]}" | sort -n)); unset IFS
+  echo "${sorted[1]}"
+}
+
 # 回落域名筛选向导（半自动：测试+排序+确认）
 select_fallback_domain() {
   local country server_domain line dom c t note i result candidates=() sorted=()
@@ -333,18 +349,18 @@ select_fallback_domain() {
   done
   IFS=$'\n' sorted=($(sort -t'|' -k1,1 -k2,2 <<<"${sorted[*]}")); unset IFS
 
-  # 3) 逐个测试，通过即展示；最多展示 6 个
+  # 3) 逐个测试，通过即测握手延迟；最多收 6 个
   log_info "正在测试回落候选（TLS1.3+H2+X25519+非跳转+非Cloudflare）..."
-  local tested=0 shown=0
+  local tested=0 shown=0 delay
   for line in "${sorted[@]}"; do
     [[ "$shown" -ge 6 ]] && break
     IFS='|' read -r _ _ dom note <<<"$line"
     result="$(test_fallback_domain "$dom")"
     tested=$((tested+1))
     if [[ "$result" == "ok" ]]; then
+      delay="$(measure_handshake_ms "$dom")"
       shown=$((shown+1))
-      candidates+=("$dom|$note")
-      log_info "  [${shown}] ${dom}  (${note}) ✓"
+      candidates+=("$dom|$note|$delay")
     else
       log_warn "  ✗ ${dom} — ${result}"
     fi
@@ -352,11 +368,21 @@ select_fallback_domain() {
 
   [[ ${#candidates[@]} -eq 0 ]] && die "所有候选均未通过测试，请检查服务器网络或换用自有域名"
 
-  # 用户确认（默认第一个）；注意此处输出到 stderr 的空行分隔符不可用 echo（会被 $(...) 捕获污染返回值）
-  read_input "选择回落域名 [1-${#candidates[@]}，回车默认 1]: " i
+  # 4) 按握手延迟升序排序（默认选最低延迟），并列时保持原顺序
+  IFS=$'\n' candidates=($(printf '%s\n' "${candidates[@]}" | sort -t'|' -k3,3n)); unset IFS
+
+  # 5) 展示排序结果
+  log_info "候选按握手延迟排序（默认选最低）:"
+  for ((i=0; i<${#candidates[@]}; i++)); do
+    IFS='|' read -r dom note delay <<<"${candidates[$i]}"
+    log_info "  [$((i+1))] ${dom}  (${note}) ✓ ${delay}ms"
+  done
+
+  # 6) 用户确认（默认第一个 = 延迟最低）；注意此处输出到 stderr 的空行分隔符不可用 echo（会被 $(...) 捕获污染返回值）
+  read_input "选择回落域名 [1-${#candidates[@]}，回车默认 1（最低延迟）]: " i
   i="${i:-1}"
   [[ "$i" =~ ^[0-9]+$ ]] && [[ "$i" -ge 1 ]] && [[ "$i" -le "${#candidates[@]}" ]] || die "无效选择"
-  IFS='|' read -r dom note <<<"${candidates[$((i-1))]}"
+  IFS='|' read -r dom note delay <<<"${candidates[$((i-1))]}"
   echo "$dom"
 }
 
