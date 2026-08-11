@@ -564,7 +564,8 @@ build_config() {  # 从 state.json 聚合 inbounds + routing
     }' > "${CONFIG_FILE}.tmp"
 
   # 校验通过才生效（原子替换）
-  if "${BIN_PATH}" run -test -config "${CONFIG_FILE}.tmp" >/dev/null 2>&1; then
+  # 注意：xray 26.x 按扩展名判断格式，.tmp 后缀会报 "Failed to get format"，必须显式 -format=json
+  if "${BIN_PATH}" run -test -format=json -config "${CONFIG_FILE}.tmp" >/dev/null 2>&1; then
     mv "${CONFIG_FILE}.tmp" "${CONFIG_FILE}"
     chmod 600 "${CONFIG_FILE}"
     log_info "配置生成并校验通过: ${CONFIG_FILE}"
@@ -852,7 +853,7 @@ cmd_config() {  # $1=show|edit
         vi "$CONFIG_FILE"
       fi
       # 编辑后校验 + 重载
-      if "${BIN_PATH}" run -test -config "$CONFIG_FILE" >/dev/null 2>&1; then
+      if "${BIN_PATH}" run -test -format=json -config "$CONFIG_FILE" >/dev/null 2>&1; then
         service_restart
         log_info "配置校验通过并已重载服务"
       else
