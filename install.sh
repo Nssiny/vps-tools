@@ -18,8 +18,12 @@
 #   - 幂等：重复 install = 覆盖更新
 #   - 首次交互运行自动安装管理命令 /usr/local/bin/vps-tools，之后直接 vps-tools 进入菜单
 #   - 管道方式（curl | sudo bash）也能交互：stdin 被占用时从 /dev/tty 读取输入
+#   - 启动检查更新：交互菜单进入时比对远端版本，有新版本提示（离线静默）
 
 set -euo pipefail
+
+# ============ 版本号（发布新功能时递增，供启动检查用） ============
+VPS_TOOLS_VERSION="1.1.0"
 
 # ============ 配置 ============
 GH_USER="inybit"
@@ -57,6 +61,31 @@ TOOLS=(
 log_info()  { echo -e "\033[0;32m[INFO]\033[0m $*"; }
 log_warn()  { echo -e "\033[0;33m[WARN]\033[0m $*"; }
 log_err()   { echo -e "\033[0;31m[ERROR]\033[0m $*" >&2; }
+
+# 语义化版本比较（x.y.z，纯 bash 兼容 Alpine busybox，不用 sort -V）
+ver_gt() {  # $1 > $2 返回 0
+  local IFS=. a b i
+  read -ra a <<<"$1"
+  read -ra b <<<"$2"
+  for i in 0 1 2; do
+    [[ "${a[$i]:-0}" -gt "${b[$i]:-0}" ]] && return 0
+    [[ "${a[$i]:-0}" -lt "${b[$i]:-0}" ]] && return 1
+  done
+  return 1
+}
+
+# 启动检查更新：比对远端 install.sh 版本号，有新版返回 0 并提示；离线/同版本返回 1（静默）
+check_update() {
+  local remote
+  remote="$(curl -fsSL --max-time 8 "${BASE_URL}/install.sh" 2>/dev/null | grep -m1 '^VPS_TOOLS_VERSION=' | cut -d= -f2 | tr -d '"' | tr -d ' ')"
+  [[ -n "$remote" ]] || return 1
+  if ver_gt "$remote" "$VPS_TOOLS_VERSION"; then
+    log_warn "检测到新版本 vps-tools ${remote}（当前 ${VPS_TOOLS_VERSION}）"
+    log_warn "更新方式: vps-tools 菜单选 5，或运行: curl -sSL ${BASE_URL}/install.sh | sudo bash"
+    return 0
+  fi
+  return 1
+}
 
 # 解析工具注册表行
 tool_field() {  # $1=行 $2=字段号(1-5)
@@ -251,6 +280,8 @@ interactive_menu() {
   if [[ $EUID -eq 0 ]] && [[ ! -x "${VPS_TOOLS_CMD}" ]]; then
     install_self || true   # 非 root / 下载失败不阻塞菜单
   fi
+  # 启动检查更新（离线/同版本静默，不阻塞菜单）
+  check_update || true
   while true; do
     echo
     echo "===== vps-tools 管理 ====="
