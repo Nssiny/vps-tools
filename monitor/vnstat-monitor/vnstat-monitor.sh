@@ -14,7 +14,7 @@
 #   vnstat-monitor -v, --version   # 显示版本号
 #   vnstat-monitor -h, --help      # 显示用法（同 help）
 
-VERSION="1.0.0"   # 发布新功能时递增（配合 vps-tools 工具约定：新增工具必须支持 -v/-h）
+VERSION="1.1.0"   # 发布新功能时递增（配合 vps-tools 工具约定：新增工具必须支持 -v/-h）
 
 # ============ systemd timer 管理（替代 crontab） ============
 # 用法见文件头。设计：频率持久化到 /etc/vnstat-monitor.env 的 INTERVAL_MINUTES，
@@ -425,14 +425,23 @@ if [[ -z "$INTERFACE" || "$INTERFACE" == "auto" ]]; then
 fi
 
 # 3. 自动配置 vnstat 流量重置日
-if [[ -n "$RESET_DAY" && "$RESET_DAY" =~ ^[0-9]+$ ]]; then
+# 2026-08-12 修复：原检测 awk '/^MonthRotate/' 匹配不到注释形式 ";MonthRotate 1"
+#（分号开头）→ CUR_ROTATE 取空 → 每次 setup 都误判"需修改"→ 重复追加配置行 +
+# 重启 vnstat → vnstat 月份计算随 MonthRotate 变更错位（当月流量记入上月行）。
+# 现在兼容 ;/# 注释前缀；存在非注释行时改值不追加；幂等。
+if [[ -n "$RESET_DAY" && "$RESET_DAY" =~ ^[0-9]+$ && -f /etc/vnstat.conf ]]; then
     if (( RESET_DAY >= 1 && RESET_DAY <= 28 )); then
-        CUR_ROTATE=$(awk '/^MonthRotate/ {print $2}' /etc/vnstat.conf 2>/dev/null)
-        if [[ "$CUR_ROTATE" != "$RESET_DAY" && -f /etc/vnstat.conf ]]; then
-            if grep -q "^#MonthRotate" /etc/vnstat.conf; then
-                sed -i "s/^#MonthRotate.*/MonthRotate $RESET_DAY/" /etc/vnstat.conf
-            elif grep -q "^MonthRotate" /etc/vnstat.conf; then
-                sed -i "s/^MonthRotate.*/MonthRotate $RESET_DAY/" /etc/vnstat.conf
+        CUR_ROTATE=""
+        if grep -qE '^[[:space:]]*MonthRotate[[:space:]]+' /etc/vnstat.conf 2>/dev/null; then
+            CUR_ROTATE=$(grep -E '^[[:space:]]*MonthRotate[[:space:]]+' /etc/vnstat.conf 2>/dev/null | head -1 | awk '{print $NF}')
+        elif grep -qE '^[;#][[:space:]]*MonthRotate[[:space:]]+' /etc/vnstat.conf 2>/dev/null; then
+            CUR_ROTATE=$(grep -E '^[;#][[:space:]]*MonthRotate[[:space:]]+' /etc/vnstat.conf 2>/dev/null | head -1 | awk '{print $NF}')
+        fi
+        if [[ "$CUR_ROTATE" != "$RESET_DAY" ]]; then
+            if grep -qE '^[[:space:]]*MonthRotate[[:space:]]+' /etc/vnstat.conf 2>/dev/null; then
+                sed -i -E "s/^([[:space:]]*MonthRotate[[:space:]]+)[0-9]+/\1${RESET_DAY}/" /etc/vnstat.conf
+            elif grep -qE '^[;#][[:space:]]*MonthRotate[[:space:]]+' /etc/vnstat.conf 2>/dev/null; then
+                sed -i -E "s/^([;#][[:space:]]*MonthRotate[[:space:]]+)[0-9]+/MonthRotate ${RESET_DAY}/" /etc/vnstat.conf
             else
                 echo "MonthRotate $RESET_DAY" >> /etc/vnstat.conf
             fi
@@ -449,21 +458,24 @@ if [[ $? -ne 0 || -z "$JSON_OUT" ]]; then
     exit 1
 fi
 
-LATEST_MONTH=$(echo "$JSON_OUT" | jq -c '.interfaces[0].traffic.month // [] | sort_by(.date.year, .date.month) | last' 2>/dev/null)
+# 计费周期基准用系统当前月份（2026-08-12 修复：不依赖 vnstat month 数组 last，
+# 避免 vnstat 月份错位/MonthRotate 变更导致周期字符串漂移 → 误判跨周期发新卡）
+BILLING_YEAR=$(date +%Y)
+BILLING_MONTH=$(date +%m | sed 's/^0//')
 
-if [[ "$LATEST_MONTH" == "null" || -z "$LATEST_MONTH" ]]; then
-    RX_BYTES=0
-    TX_BYTES=0
-    BILLING_YEAR=$(date +%Y)
-    BILLING_MONTH=$(date +%-m)
-else
-    RX_BYTES=$(echo "$LATEST_MONTH" | jq -r '.rx')
-    TX_BYTES=$(echo "$LATEST_MONTH" | jq -r '.tx')
-    BILLING_YEAR=$(echo "$LATEST_MONTH" | jq -r '.date.year')
-    BILLING_MONTH=$(echo "$LATEST_MONTH" | jq -r '.date.month')
-    
-    if [[ "$RX_BYTES" == "null" ]]; then RX_BYTES=0; fi
-    if [[ "$TX_BYTES" == "null" ]]; then TX_BYTES=0; fi
+# 流量数据：优先取当前自然月的 vnstat 行；无则回退 month 数组最后一条
+MONTHS=$(echo "$JSON_OUT" | jq -c '.interfaces[0].traffic.month // []' 2>/dev/null)
+LATEST_MONTH=$(echo "$MONTHS" | jq -c --argjson y "$BILLING_YEAR" --argjson m "$BILLING_MONTH" \
+    '[ .[] | select(.date.year == $y and .date.month == $m) ] | last' 2>/dev/null)
+if [[ -z "$LATEST_MONTH" || "$LATEST_MONTH" == "null" ]]; then
+    LATEST_MONTH=$(echo "$MONTHS" | jq -c 'sort_by(.date.year, .date.month) | last' 2>/dev/null)
+fi
+
+RX_BYTES=0
+TX_BYTES=0
+if [[ -n "$LATEST_MONTH" && "$LATEST_MONTH" != "null" ]]; then
+    RX_BYTES=$(echo "$LATEST_MONTH" | jq -r '.rx // 0')
+    TX_BYTES=$(echo "$LATEST_MONTH" | jq -r '.tx // 0')
 fi
 
 # 5. 根据设定的模式计算原始流量
