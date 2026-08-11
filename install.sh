@@ -3,8 +3,9 @@
 # vps-tools 一键安装/更新/卸载器
 #
 # 用法:
-#   bash <(curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh)            # 交互式选择工具（TTY）
-#   bash <(curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh) install    # 安装全部工具（非 TTY/管道 兼容）
+#   bash <(curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh)            # 交互式管理菜单（安装/更新/卸载/查看）
+#   vps-tools                                                                                       # 安装后同一入口（管理命令）
+#   bash <(curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh) install    # 交互式选择安装（有终端）
 #   bash <(curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh) install vnstat-monitor   # 安装指定工具
 #   bash <(curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh) update vnstat-monitor    # 更新指定工具
 #   bash <(curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh) uninstall vnstat-monitor # 卸载指定工具
@@ -14,6 +15,8 @@
 #   - 配置模板首次安装时复制到 /etc/<tool>.env（已存在则不覆盖），真实密钥由用户填写
 #   - 提示 cron 添加（不自动改 crontab，避免破坏现有条目）
 #   - 幂等：重复 install = 覆盖更新
+#   - 首次交互运行自动安装管理命令 /usr/local/bin/vps-tools，之后直接 vps-tools 进入菜单
+#   - 管道方式（curl | sudo bash）也能交互：stdin 被占用时从 /dev/tty 读取输入
 
 set -euo pipefail
 
@@ -25,6 +28,7 @@ BASE_URL="https://raw.githubusercontent.com/${GH_USER}/${GH_REPO}/${GH_BRANCH}"
 
 INSTALL_DIR="/usr/local/bin"          # 脚本安装根目录
 CONFIG_DIR="/etc"                     # 配置目标目录
+VPS_TOOLS_CMD="${INSTALL_DIR}/vps-tools"  # 管理命令入口
 
 # ============ 工具注册表 ============
 # 每行一个工具: name|script|env_template|env_target|cron_line
@@ -134,28 +138,63 @@ uninstall_tool() {  # $1=tool line
   log_info "请手动删除 crontab 中的 ${name} 条目（如有）。"
 }
 
-# ============ 交互式工具选择（无参 + TTY 时） ============
-interactive_menu() {
-  echo "可用工具（输入编号多选，逗号分隔；0=全部；q=退出）:"
-  local i=1 line
+# ============ 交互输入 ============
+# 管道方式（curl | sudo bash -s --）下 stdin 被 curl 占用，改从 /dev/tty 读取。
+# 返回 1 = 无交互终端（纯 CI/脚本场景）。
+read_input() {  # $1=提示 $2=变量名
+  if [[ -t 0 ]]; then
+    read -r -p "$1" "$2"
+  elif [[ -r /dev/tty ]]; then
+    read -r -p "$1" "$2" < /dev/tty
+  else
+    return 1
+  fi
+}
+
+# 安装/更新 vps-tools 管理命令（自身）
+install_self() {
+  [[ $EUID -eq 0 ]] || return 1
+  mkdir -p "$(dirname "${VPS_TOOLS_CMD}")"   # curl 写文件前先建目录（防 curl 23）
+  if curl -fsSL --max-time 60 "${BASE_URL}/install.sh" -o "${VPS_TOOLS_CMD}"; then
+    chmod +x "${VPS_TOOLS_CMD}"
+    log_info "已安装管理命令: ${VPS_TOOLS_CMD}（直接运行 vps-tools 进入管理）"
+    return 0
+  fi
+  log_warn "安装 ${VPS_TOOLS_CMD} 失败（不影响工具安装）"
+  return 1
+}
+
+# ============ 交互式工具选择 ============
+pick_tools_menu() {  # $1=动作 install|update|uninstall
+  local action="$1" i=1 line sel mark
+  echo "可用工具（输入编号多选，逗号分隔；0=全部；q=返回；* = 已安装）:"
   for line in "${TOOLS[@]}"; do
-    echo "  $i) $(tool_field "$line" 1)  ($(tool_field "$line" 2))"
+    mark=" "
+    [[ -d "${INSTALL_DIR}/$(tool_field "$line" 1)" ]] && mark="*"
+    echo "  $i) $(tool_field "$line" 1)  ($(tool_field "$line" 2)) ${mark}"
     i=$((i+1))
   done
-  echo "  0) 安装全部"
-  read -r -p "选择: " sel
+  read_input "选择: " sel || { log_warn "无交互终端，已取消"; return 1; }
+  local -a picks=() p
   case "${sel,,}" in
-    ""|q) log_info "已退出"; return 0 ;;
+    ""|q) return 0 ;;
     0)
-      local l
-      for l in "${TOOLS[@]}"; do install_tool "$l"; done
+      for line in "${TOOLS[@]}"; do
+        case "$action" in
+          install|update) install_tool "$line" ;;
+          uninstall)      uninstall_tool "$line" ;;
+        esac
+      done
       ;;
     *)
-      local -a picks=() p
       IFS=', ' read -r -a picks <<<"$sel"
       for p in "${picks[@]}"; do
         if [[ "$p" =~ ^[0-9]+$ ]] && (( p >= 1 && p <= ${#TOOLS[@]} )); then
-          install_tool "${TOOLS[$((p-1))]}"
+          line="${TOOLS[$((p-1))]}"
+          case "$action" in
+            install|update) install_tool "$line" ;;
+            uninstall)      uninstall_tool "$line" ;;
+          esac
         else
           log_err "无效选择: $p"
         fi
@@ -164,12 +203,42 @@ interactive_menu() {
   esac
 }
 
+interactive_menu() {
+  # root 时确保 vps-tools 管理命令就位（管道方式首次运行也生效）
+  if [[ $EUID -eq 0 ]] && [[ ! -x "${VPS_TOOLS_CMD}" ]]; then
+    install_self || true   # 非 root / 下载失败不阻塞菜单
+  fi
+  while true; do
+    echo
+    echo "===== vps-tools 管理 ====="
+    echo "  1) 安装工具（选择）"
+    echo "  2) 更新工具（选择）"
+    echo "  3) 卸载工具（选择）"
+    echo "  4) 查看工具"
+    echo "  5) 更新 vps-tools 自身"
+    echo "  0) 退出"
+    read_input "请选择 [0-5]: " choice || { log_warn "无交互终端，已退出"; break; }
+    case "${choice:-0}" in
+      1) pick_tools_menu install ;;
+      2) pick_tools_menu update ;;
+      3) pick_tools_menu uninstall ;;
+      4) list_tools ;;
+      5) install_self ;;
+      0) break ;;
+      *) log_warn "无效选择" ;;
+    esac
+  done
+}
+
 # ============ 主流程 ============
 main() {
-  local action="${1:-install}"
+  local action="${1:-menu}"
   local tool="${2:-}"
 
   case "$action" in
+    menu)
+      interactive_menu
+      ;;
     install|update)
       # root 检测：非 root 明确提示（管道方式无法自动 sudo 重执行，统一引导）
       if [[ $EUID -ne 0 ]]; then
@@ -186,12 +255,13 @@ main() {
         else
           log_err "未知工具: ${tool}"; list_tools; return 1
         fi
-      elif [[ "$action" == "install" ]] && [[ -t 0 ]]; then
-        # 无参 + TTY → 交互式选择；无参 + 非 TTY（管道/CI）→ 安装全部（向后兼容）
-        interactive_menu
+      elif [[ "$action" == "install" ]] && ( [[ -t 0 ]] || [[ -r /dev/tty ]] ); then
+        # 无参 + 可交互 → 交互式选择（不静默装全部）
+        pick_tools_menu install
       else
-        local l
-        for l in "${TOOLS[@]}"; do install_tool "$l"; done
+        log_err "未指定工具且无交互终端。用法: ${0##*/} ${action} <tool>"
+        list_tools
+        return 1
       fi
       ;;
     uninstall)

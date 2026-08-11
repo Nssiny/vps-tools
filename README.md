@@ -4,25 +4,34 @@
 
 ## 快速开始
 
-### 方式一：交互式选择（推荐）
+### 方式一：一键安装 + 交互式管理（推荐）
 
-SSH 登录 VPS 后直接运行，会列出工具清单供选择（多选、全部或退出）：
+SSH 登录 VPS 后直接运行，自动安装管理命令 `vps-tools` 并进入交互菜单（安装/更新/卸载/查看工具均可选择）：
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh | sudo bash -s --
 ```
 
 ```
-可用工具（输入编号多选，逗号分隔；0=全部；q=退出）:
-  1) vnstat-monitor  (monitor/vnstat-monitor/vnstat-monitor.sh)
-  2) xray-deploy     (proxy/xray-deploy/xray-deploy.sh)
-  0) 安装全部
-选择: 1,2
+===== vps-tools 管理 =====
+  1) 安装工具（选择）
+  2) 更新工具（选择）
+  3) 卸载工具（选择）
+  4) 查看工具
+  5) 更新 vps-tools 自身
+  0) 退出
+请选择 [0-5]:
 ```
 
-> 交互模式需要终端（TTY）；SSH/物理终端均可。管道、脚本、CI 等无 TTY 场景请用方式二。
+> 管道方式（curl | sudo bash）下 stdin 被 curl 占用，脚本会自动改从 `/dev/tty` 读取输入，**交互菜单依然可用**。
 
-### 方式二：命令行指定工具
+安装完成后，之后的管理直接运行：
+
+```bash
+sudo vps-tools          # 进入交互式管理菜单
+```
+
+### 方式二：命令行指定工具（脚本/CI 场景）
 
 ```bash
 # 安装/更新指定工具（重复执行即覆盖更新，配置保留）
@@ -40,7 +49,7 @@ sudo bash install.sh install vnstat-monitor
 ```
 
 > **关于 root**：`install/update/uninstall` 必须 root。管道方式 `curl | sudo bash -s --` 自动以 root 运行（普通用户登录的 VPS 也能用）；非 root 直接运行会提示并给出完整 sudo 命令。
-> **关于 TTY**：无参数直接运行 `install.sh` 时，有 TTY 走交互式选择；无 TTY（管道/CI）退化为安装全部，与旧版行为一致。
+> **关于交互**：无参数运行进入交互管理菜单；纯 CI/无终端环境请用方式二指定工具，避免卡在输入等待。
 
 ## 安装器行为
 
