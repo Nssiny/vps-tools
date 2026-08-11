@@ -263,14 +263,14 @@ detect_server_country() {
 
 # 测试回落域名: 返回 0=通过；输出原因到 stdout
 # 兼容 OpenSSL 1.1.1/3.x：3.x 的 s_client 输出 "New, TLSv1.3, Cipher is ..."，
-# 不再有 "Protocol  : TLSv1.3" 行；Server Temp Key 带 ", 253 bits" 后缀。
+# 不再有 "Protocol  : TLSv1.3" 行。X25519 不单独 grep——-groups X25519 参数
+# 已限定客户端仅提供 X25519，TLSv1.3 握手成功即证明服务端支持（部分版本 TLS1.3 无 Server Temp Key 行）。
 test_fallback_domain() {
   local domain="$1" out code
-  # TLS1.3 + H2 + X25519 + 非 Cloudflare + 证书有效
+  # TLS1.3 + H2 + X25519(隐含) + 非 Cloudflare + 证书有效
   out="$(echo | timeout 12 openssl s_client -connect "${domain}:443" -tls1_3 -alpn h2 -groups X25519 -servername "$domain" 2>&1 || true)"
   grep -qE "New, TLSv1\.3|Protocol  : TLSv1\.3" <<<"$out" || { echo "TLSv1.3 不支持"; return 1; }
   grep -qE "ALPN protocol: h2" <<<"$out" || { echo "不支持 H2"; return 1; }
-  grep -qiE "Server Temp Key: X25519" <<<"$out" || { echo "未协商 X25519"; return 1; }
   grep -qi "cloudflare" <<<"$out" && { echo "Cloudflare CDN（不推荐）"; return 1; }
   grep -q "Verify return code: 0" <<<"$out" || { echo "证书校验失败"; return 1; }
   # 非跳转：HTTP 状态应为 2xx
@@ -580,7 +580,7 @@ proto_wizard_vless_reality() {  # $1=name → 输出 JSON 参数对象
   port="${port:-443}"
   [[ "$port" =~ ^[0-9]+$ ]] && [[ "$port" -ge 1 ]] && [[ "$port" -le 65535 ]] || die "无效端口"
   port_in_use "$port" && die "端口 ${port} 已被占用"
-  sni="$(select_fallback_domain)"
+  sni="$(select_fallback_domain)" || die "回落域名选择失败"
   uuid="$(gen_uuid)"
   keys="$(gen_reality_keys)"
   priv="${keys%% *}"; pub="${keys##* }"
@@ -616,7 +616,7 @@ proto_add() {
 
   local params
   case "$type" in
-    vless-reality) params="$(proto_wizard_vless_reality "$name")" ;;
+    vless-reality) params="$(proto_wizard_vless_reality "$name")" || die "协议参数生成失败" ;;
     *) die "未实现的协议向导: ${type}" ;;
   esac
 
@@ -670,7 +670,7 @@ proto_edit() {
       ;;
     2)
       local sni
-      sni="$(select_fallback_domain)"
+      sni="$(select_fallback_domain)" || die "回落域名选择失败"
       state_set --arg n "$name" --arg sni "$sni" \
         '.protocols = [.protocols[] | if .name==$n then .sni=$sni else . end]'
       ;;
@@ -715,7 +715,7 @@ cmd_install() {
   log_info "默认部署协议: VLESS-TCP-XTLS-Vision-REALITY"
   local name="vless-reality-01"
   local params
-  params="$(proto_wizard_vless_reality "$name")"
+  params="$(proto_wizard_vless_reality "$name")" || die "协议参数生成失败"
   state_set --argjson p "$params" '.protocols = [$p]'
 
   install_service_file
