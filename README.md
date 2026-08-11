@@ -63,6 +63,14 @@ sudo bash install.sh install vnstat-monitor
 
 ## 仓库结构（按功能域分类）
 
+### 工具开发约定（新增工具必须遵守）
+
+- **版本号**：脚本头部定义 `VERSION="x.y.z"`，发布新功能时递增
+- **`-v`/`--version`/`-V`**：输出 `<工具名> <版本号>`（如 `vnstat-monitor 1.0.0`）
+- **`-h`/`--help`**：输出用法说明（子命令清单 + 示例）
+- **定时调度**：统一用 systemd timer（工具 `setup` 子命令管理），不使用 crontab
+- **配置**：`/etc/<tool>.env`（600 权限，模板含 `${PLACEHOLDER}` 占位符，真实密钥本机填写）
+
 ```
 vps-tools/
 ├── install.sh          # 一键安装/更新/卸载器（工具注册表在文件头 TOOLS）

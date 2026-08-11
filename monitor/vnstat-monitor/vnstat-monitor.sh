@@ -11,6 +11,10 @@
 #   sudo vnstat-monitor timer-status           # 查看 timer 状态
 #   sudo vnstat-monitor uninstall-timer        # 移除 timer 与 service（保留配置）
 #   vnstat-monitor help            # 显示用法
+#   vnstat-monitor -v, --version   # 显示版本号
+#   vnstat-monitor -h, --help      # 显示用法（同 help）
+
+VERSION="1.0.0"   # 发布新功能时递增（配合 vps-tools 工具约定：新增工具必须支持 -v/-h）
 
 # ============ systemd timer 管理（替代 crontab） ============
 # 用法见文件头。设计：频率持久化到 /etc/vnstat-monitor.env 的 INTERVAL_MINUTES，
@@ -311,7 +315,19 @@ vnstat_timer_cmd() {  # $1=子命令 $2=可选参数
   local sub="${1:-}" arg2="${2:-}" minutes
   case "$sub" in
     help|-h|--help)
-      sed -n '4,13p' "$0"
+      cat <<EOF
+vnstat-monitor ${VERSION} — vnStat 流量监控（Telegram 推送 + 超阈值关机）
+
+用法:
+  vnstat-monitor                       立即检查一次（systemd timer / 手动）
+  sudo vnstat-monitor setup            交互式设置全部配置项 + 安装 systemd timer
+  sudo vnstat-monitor install-timer [分钟]   安装/更新 timer（默认用配置 INTERVAL_MINUTES）
+  sudo vnstat-monitor set-interval <分钟>    修改触发频率并重载 timer
+  sudo vnstat-monitor timer-status      查看 timer 状态
+  sudo vnstat-monitor uninstall-timer   移除 timer 与 service（保留配置）
+  vnstat-monitor -v, --version          显示版本号
+  vnstat-monitor -h, --help             显示本帮助
+EOF
       ;;
     setup)
       # 交互式设置：先确保依赖 → 全配置向导 → 迁移旧 crontab → 装 timer
@@ -367,6 +383,10 @@ vnstat_timer_cmd() {  # $1=子命令 $2=可选参数
 # ============ 子命令分发（timer 管理，不依赖监控依赖） ============
 CMD="${1:-}"
 case "$CMD" in
+  -v|--version|-V)
+    echo "vnstat-monitor ${VERSION}"
+    exit 0
+    ;;
   setup|install-timer|set-interval|timer-status|uninstall-timer|help|-h|--help)
     # 需要 root 的 timer 操作
     if [[ "$CMD" == "setup" || "$CMD" == "install-timer" || "$CMD" == "set-interval" || "$CMD" == "uninstall-timer" ]]; then

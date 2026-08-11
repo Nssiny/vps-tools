@@ -41,6 +41,8 @@
 
 set -euo pipefail
 
+VERSION="1.0.0"   # 发布新功能时递增（配合 vps-tools 工具约定：新增工具必须支持 -v/-h）
+
 # ============ 路径常量 ============
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # 注意：/usr/local/bin/xray-deploy 是 vps-tools 生成的命令入口（wrapper），
@@ -942,6 +944,24 @@ cmd_fallback_test() {  # $1=可选域名（测单个）；无参 = 测全部候�
 # ============ 子命令分发 ============
 CMD="${1:-menu}"
 case "$CMD" in
+  -v|--version|-V)  echo "xray-deploy ${VERSION}"; exit 0 ;;
+  -h|--help)        cat <<EOF
+xray-deploy ${VERSION} — Xray 一键部署/管理（vps-tools 生态）
+
+用法:
+  xray-deploy                      交互式管理菜单
+  sudo xray-deploy install         首次部署向导（回落检测 → 密钥 → 服务）
+  xray-deploy info                 查看节点信息（明文 + 客户端配置片段）
+  xray-deploy config show|edit     查看/编辑服务端配置（edit 后自动 -test 校验并重载）
+  xray-deploy fallback-test [域名] 测试回落域名握手延迟并排序（无参=全部候选）
+  sudo xray-deploy update-geo      更新 geosite/geoip（或自行配 systemd timer）
+  sudo xray-deploy upgrade         升级 Xray 二进制（失败自动回滚）
+  sudo xray-deploy status|restart|uninstall
+  sudo xray-deploy protocol add|remove|edit|list   多协议管理
+  xray-deploy -v, --version        显示版本号
+  xray-deploy -h, --help           显示本帮助
+EOF
+      exit 0 ;;
   install)       cmd_install ;;
   info)          cmd_info ;;
   config)        cmd_config "${2:-show}" ;;
