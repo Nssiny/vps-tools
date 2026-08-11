@@ -279,7 +279,7 @@ interactive_menu() {
   check_update || true
   while true; do
     echo
-    echo "===== vps-tools 管理 ====="
+    echo "===== vps-tools 管理（v${VPS_TOOLS_VERSION}）====="
     echo "  1) 安装工具（选择）"
     echo "  2) 更新工具（选择）"
     echo "  3) 卸载工具（选择）"
@@ -307,6 +307,26 @@ main() {
   case "$action" in
     menu)
       interactive_menu
+      ;;
+    -v|--version|-V)
+      echo "vps-tools ${VPS_TOOLS_VERSION}"
+      ;;
+    -h|--help)
+      cat <<EOF
+vps-tools ${VPS_TOOLS_VERSION} — vps-tools 管理工具
+
+用法:
+  vps-tools                    进入交互式管理菜单
+  vps-tools install [工具]     安装工具（无参 = 交互式选择）
+  vps-tools update  [工具]     更新工具
+  vps-tools uninstall [工具]   卸载工具
+  vps-tools list               查看已安装/可用的工具
+  vps-tools self-update        更新 vps-tools 自身
+  vps-tools -v, --version      显示版本号
+  vps-tools -h, --help         显示本帮助
+
+可用工具: ${TOOLS[*]//|*|*|*|*/}
+EOF
       ;;
     install|update)
       # root 检测：非 root 明确提示（管道方式无法自动 sudo 重执行，统一引导）
