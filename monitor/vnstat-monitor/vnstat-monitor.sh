@@ -19,35 +19,182 @@
 TIMER_SERVICE="/etc/systemd/system/vnstat-monitor.service"
 TIMER_UNIT="/etc/systemd/system/vnstat-monitor.timer"
 
+# 通用配置读取（key → 值，去引号去空格；文件缺失或 key 缺失输出空）
+cfg_get() {  # $1=key
+  local f="${CONFIG_FILE:-/etc/vnstat-monitor.env}"
+  [[ -f "$f" ]] || return 0
+  grep -E "^${1}=" "$f" 2>/dev/null | tail -1 | cut -d= -f2- | sed 's/^"//; s/"$//' | tr -d ' '
+}
+
+# 通用配置写入（key=value，原子 tmp+mv；key 已存在则替换，否则追加）
+cfg_set() {  # $1=key $2=value
+  local f="${CONFIG_FILE:-/etc/vnstat-monitor.env}" key="$1" val="$2"
+  [[ -f "$f" ]] || { echo "Error: 配置不存在: $f" >&2; return 1; }
+  local tmp="${f}.tmp"
+  if grep -qE "^${key}=" "$f"; then
+    sed "s|^${key}=.*|${key}=\"${val}\"|" "$f" > "$tmp"
+  else
+    cp "$f" "$tmp"
+    echo "${key}=\"${val}\"" >> "$tmp"
+  fi
+  mv "$tmp" "$f"
+  chmod 600 "$f"
+  echo "已更新配置: ${key}=${val}"
+}
+
 # 从配置读取当前频率（不存在时用默认 15）
 read_interval() {
-  local f="${CONFIG_FILE:-/etc/vnstat-monitor.env}"
-  if [[ -f "$f" ]]; then
-    local v
-    v=$(grep -E '^INTERVAL_MINUTES=' "$f" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d '"' | tr -d ' ')
-    if [[ -n "$v" ]]; then
-      echo "$v"
-      return 0
-    fi
-  fi
-  echo "15"
+  local v
+  v="$(cfg_get INTERVAL_MINUTES)"
+  [[ -n "$v" ]] && echo "$v" || echo "15"
 }
 
 # 写/更新配置里的 INTERVAL_MINUTES（原子：tmp + mv，避免并发半写）
 persist_interval() {  # $1=分钟数
-  local f="${CONFIG_FILE:-/etc/vnstat-monitor.env}" minutes="$1"
-  [[ -f "$f" ]] || { echo "Error: 配置不存在: $f" >&2; return 1; }
-  if grep -qE '^INTERVAL_MINUTES=' "$f"; then
-    sed -i "s/^INTERVAL_MINUTES=.*/INTERVAL_MINUTES=\"${minutes}\"/" "$f"
-  else
-    echo "INTERVAL_MINUTES=\"${minutes}\"" >> "$f"
-  fi
-  echo "已更新配置: $f -> INTERVAL_MINUTES=${minutes}"
+  cfg_set INTERVAL_MINUTES "$1"
 }
 
 # 校验分钟数（1-1440 整数）
 valid_interval() {
   [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 1 && $1 <= 1440 ))
+}
+
+# ============ 全配置项交互式设置 ============
+# 交互读取一个值：提示当前值/默认值，回车保留，输入新值校验后返回
+# 注意：提示语必须输出到 stderr（本函数返回值靠 stdout $(...) 捕获，提示进 stdout 会污染返回值）
+prompt_value() {  # $1=提示 $2=当前值 $3=默认值；stdout=最终值
+  local prompt="$1" cur="$2" dflt="$3" ans
+  if [[ -n "$cur" ]]; then
+    printf "%s（当前 %s，回车保留）: " "$prompt" "$cur" >&2
+  else
+    printf "%s（默认 %s，回车默认）: " "$prompt" "$dflt" >&2
+  fi
+  if [[ -t 0 ]]; then
+    read -r ans
+  elif [[ -r /dev/tty ]] 2>/dev/null; then
+    read -r ans < /dev/tty
+  else
+    ans=""
+  fi
+  if [[ -n "$ans" ]]; then
+    echo "$ans"
+  elif [[ -n "$cur" ]]; then
+    echo "$cur"
+  else
+    echo "$dflt"
+  fi
+}
+
+# 全配置交互向导：逐项询问所有配置，写回 env（不覆盖用户已填的真实密钥除非输入）
+interactive_config() {  # 返回 0
+  local v
+  # VPS_NAME
+  v="$(prompt_value "VPS 名称" "$(cfg_get VPS_NAME)" "未命名服务器")"
+  cfg_set VPS_NAME "$v"
+  # INTERFACE
+  v="$(prompt_value "监控网卡（auto=自动检测）" "$(cfg_get INTERFACE)" "auto")"
+  cfg_set INTERFACE "$v"
+  # CALC_MODE 枚举校验
+  while :; do
+    v="$(prompt_value "流量计算模式（both|out|in|max）" "$(cfg_get CALC_MODE)" "both")"
+    case "$v" in both|out|in|max) break ;; *) echo "Error: 无效模式: $v（可选 both/out/in/max）" >&2 ;; esac
+  done
+  cfg_set CALC_MODE "$v"
+  # RESET_DAY 1-28
+  while :; do
+    v="$(prompt_value "流量重置日（1-28）" "$(cfg_get RESET_DAY)" "1")"
+    [[ "$v" =~ ^[0-9]+$ ]] && (( v >= 1 && v <= 28 )) && break || echo "Error: 无效重置日: $v（需 1-28）" >&2
+  done
+  cfg_set RESET_DAY "$v"
+  # TOTAL_GB 数字（0=无限）
+  while :; do
+    v="$(prompt_value "流量总量 GB（0=无限流量）" "$(cfg_get TOTAL_GB)" "1000")"
+    [[ "$v" =~ ^[0-9]+$ ]] && break || echo "Error: 无效流量总量: $v" >&2
+  done
+  cfg_set TOTAL_GB "$v"
+  # OFFSET_GB 数字（可负）
+  while :; do
+    v="$(prompt_value "手动校准偏移 GB（可负）" "$(cfg_get OFFSET_GB)" "0")"
+    [[ "$v" =~ ^-?[0-9]+$ ]] && break || echo "Error: 无效偏移量: $v" >&2
+  done
+  cfg_set OFFSET_GB "$v"
+  # SHUTDOWN_PERCENT 0-100
+  while :; do
+    v="$(prompt_value "自动关机阈值 %（0-100，TOTAL_GB=0 时无效）" "$(cfg_get SHUTDOWN_PERCENT)" "95")"
+    [[ "$v" =~ ^[0-9]+$ ]] && (( v >= 0 && v <= 100 )) && break || echo "Error: 无效阈值: $v（需 0-100）" >&2
+  done
+  cfg_set SHUTDOWN_PERCENT "$v"
+  # TG_BOT_TOKEN（无默认，空则必须填）
+  v="$(cfg_get TG_BOT_TOKEN)"
+  while :; do
+    if [[ -n "$v" ]]; then
+      prompt_token "Telegram Bot Token（当前已设置 ${v:0:6}****，回车保留）: "
+      read_token
+      [[ -n "$TOKEN_ANS" ]] && v="$TOKEN_ANS"
+      break
+    else
+      prompt_token "Telegram Bot Token（必填）: "
+      read_token
+      if [[ -n "$TOKEN_ANS" ]]; then v="$TOKEN_ANS"; break; fi
+      echo "Error: Bot Token 不能为空" >&2
+    fi
+  done
+  cfg_set TG_BOT_TOKEN "$v"
+  # TG_CHAT_ID（无默认，空则必须填）
+  v="$(cfg_get TG_CHAT_ID)"
+  while :; do
+    if [[ -n "$v" ]]; then
+      prompt_token "Telegram Chat ID（当前已设置 ${v:0:3}****，回车保留）: "
+      read_token
+      [[ -n "$TOKEN_ANS" ]] && v="$TOKEN_ANS"
+      break
+    else
+      prompt_token "Telegram Chat ID（必填）: "
+      read_token
+      if [[ -n "$TOKEN_ANS" ]]; then v="$TOKEN_ANS"; break; fi
+      echo "Error: Chat ID 不能为空" >&2
+    fi
+  done
+  cfg_set TG_CHAT_ID "$v"
+  # INTERVAL_MINUTES 1-1440
+  while :; do
+    v="$(prompt_value "触发频率（分钟）" "$(cfg_get INTERVAL_MINUTES)" "15")"
+    valid_interval "$v" && break || echo "Error: 无效频率: $v（需 1-1440 整数）" >&2
+  done
+  cfg_set INTERVAL_MINUTES "$v"
+}
+
+# 读取交互输入到 TOKEN_ANS（兼容管道安装 /dev/tty）
+read_token() {
+  TOKEN_ANS=""
+  if [[ -t 0 ]]; then
+    read -r TOKEN_ANS
+  elif [[ -r /dev/tty ]] 2>/dev/null; then
+    read -r TOKEN_ANS < /dev/tty
+  fi
+}
+# 提示语输出到 stderr（防 $(...) 捕获污染——TOKEN_ANS 用全局变量不涉及，但提示本身应到终端）
+prompt_token() {  # $1=提示文本
+  printf "%s" "$1" >&2
+}
+
+# ============ 旧版 crontab 自动迁移 ============
+# 检测 crontab 中 vnstat-monitor 条目并移除（备份原 crontab），由 systemd timer 接管
+migrate_from_crontab() {
+  local cur new backup
+  cur="$(crontab -l 2>/dev/null || true)"
+  if ! grep -q 'vnstat-monitor' <<<"$cur"; then
+    return 0  # 无旧条目，无需迁移
+  fi
+  backup="/etc/vnstat-monitor.crontab.bak"
+  echo "$cur" > "$backup"
+  new="$(grep -v 'vnstat-monitor' <<<"$cur")"
+  if [[ -n "$(echo "$new" | tr -d ' \t')" ]]; then
+    echo "$new" | crontab - 2>/dev/null || true
+  else
+    crontab -r 2>/dev/null || true   # 空 crontab 直接移除
+  fi
+  echo "已迁移旧 crontab 条目 → systemd timer（原 crontab 备份: $backup）"
 }
 
 # 生成并启用 systemd timer（核心）
@@ -86,28 +233,15 @@ vnstat_timer_cmd() {  # $1=子命令 $2=可选参数
       sed -n '4,13p' "$0"
       ;;
     setup)
-      # 交互式设置：询问频率 → 持久化 → 装 timer
-      minutes="$(read_interval)"
-      printf "触发频率（分钟，1-1440，当前 %s，回车默认 %s）: " "$minutes" "$minutes"
-      # 兼容管道安装（curl | sudo bash 时 stdin 被占用）：优先 /dev/tty
-      if [[ -t 0 ]]; then
-        read -r ans
-      elif [[ -r /dev/tty ]] 2>/dev/null; then
-        read -r ans < /dev/tty
-      else
-        ans=""
-      fi
-      if [[ -n "$ans" ]]; then
-        valid_interval "$ans" || { echo "Error: 无效频率: $ans（需 1-1440 整数）" >&2; exit 1; }
-        minutes="$ans"
-      fi
-      persist_interval "$minutes"
-      write_timer "$minutes"
+      # 交互式设置：全配置向导 → 迁移旧 crontab → 装 timer
+      interactive_config
+      migrate_from_crontab
+      write_timer "$(read_interval)"
       echo "设置完成。可用 'sudo vnstat-monitor timer-status' 查看状态；"
       echo "不再需要时 'sudo vnstat-monitor uninstall-timer' 移除。"
       ;;
     install-timer)
-      # 用配置频率（或参数覆盖）装 timer
+      # 用配置频率（或参数覆盖）装 timer；顺带迁移旧 crontab
       if [[ -n "$arg2" ]]; then
         valid_interval "$arg2" || { echo "Error: 无效频率: $arg2" >&2; exit 1; }
         minutes="$arg2"
@@ -115,6 +249,7 @@ vnstat_timer_cmd() {  # $1=子命令 $2=可选参数
       else
         minutes="$(read_interval)"
       fi
+      migrate_from_crontab
       write_timer "$minutes"
       ;;
     set-interval)
