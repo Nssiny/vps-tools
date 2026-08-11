@@ -12,6 +12,140 @@
 #   sudo vnstat-monitor uninstall-timer        # 移除 timer 与 service（保留配置）
 #   vnstat-monitor help            # 显示用法
 
+# ============ systemd timer 管理（替代 crontab） ============
+# 用法见文件头。设计：频率持久化到 /etc/vnstat-monitor.env 的 INTERVAL_MINUTES，
+# timer 由 .service(oneshot) + .timer(OnUnitActiveSec) 驱动，改频率即重写 timer 并 reload。
+
+TIMER_SERVICE="/etc/systemd/system/vnstat-monitor.service"
+TIMER_UNIT="/etc/systemd/system/vnstat-monitor.timer"
+
+# 从配置读取当前频率（不存在时用默认 15）
+read_interval() {
+  local f="${CONFIG_FILE:-/etc/vnstat-monitor.env}"
+  if [[ -f "$f" ]]; then
+    local v
+    v=$(grep -E '^INTERVAL_MINUTES=' "$f" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d '"' | tr -d ' ')
+    if [[ -n "$v" ]]; then
+      echo "$v"
+      return 0
+    fi
+  fi
+  echo "15"
+}
+
+# 写/更新配置里的 INTERVAL_MINUTES（原子：tmp + mv，避免并发半写）
+persist_interval() {  # $1=分钟数
+  local f="${CONFIG_FILE:-/etc/vnstat-monitor.env}" minutes="$1"
+  [[ -f "$f" ]] || { echo "Error: 配置不存在: $f" >&2; return 1; }
+  if grep -qE '^INTERVAL_MINUTES=' "$f"; then
+    sed -i "s/^INTERVAL_MINUTES=.*/INTERVAL_MINUTES=\"${minutes}\"/" "$f"
+  else
+    echo "INTERVAL_MINUTES=\"${minutes}\"" >> "$f"
+  fi
+  echo "已更新配置: $f -> INTERVAL_MINUTES=${minutes}"
+}
+
+# 校验分钟数（1-1440 整数）
+valid_interval() {
+  [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 1 && $1 <= 1440 ))
+}
+
+# 生成并启用 systemd timer（核心）
+write_timer() {  # $1=分钟数
+  local minutes="$1"
+  mkdir -p "$(dirname "$TIMER_SERVICE")"
+  cat > "$TIMER_SERVICE" <<EOF
+[Unit]
+Description=vnstat-monitor traffic check (oneshot)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/vnstat-monitor
+EOF
+  cat > "$TIMER_UNIT" <<EOF
+[Unit]
+Description=Run vnstat-monitor every ${minutes} minutes
+
+[Timer]
+OnUnitActiveSec=${minutes}min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now vnstat-monitor.timer >/dev/null 2>&1
+  echo "已安装 systemd timer: 每 ${minutes} 分钟执行一次"
+  echo "  ${TIMER_UNIT}"
+}
+
+vnstat_timer_cmd() {  # $1=子命令 $2=可选参数
+  local sub="${1:-}" arg2="${2:-}" minutes
+  case "$sub" in
+    help|-h|--help)
+      sed -n '4,13p' "$0"
+      ;;
+    setup)
+      # 交互式设置：询问频率 → 持久化 → 装 timer
+      minutes="$(read_interval)"
+      printf "触发频率（分钟，1-1440，当前 %s，回车默认 %s）: " "$minutes" "$minutes"
+      # 兼容管道安装（curl | sudo bash 时 stdin 被占用）：优先 /dev/tty
+      if [[ -t 0 ]]; then
+        read -r ans
+      elif [[ -r /dev/tty ]] 2>/dev/null; then
+        read -r ans < /dev/tty
+      else
+        ans=""
+      fi
+      if [[ -n "$ans" ]]; then
+        valid_interval "$ans" || { echo "Error: 无效频率: $ans（需 1-1440 整数）" >&2; exit 1; }
+        minutes="$ans"
+      fi
+      persist_interval "$minutes"
+      write_timer "$minutes"
+      echo "设置完成。可用 'sudo vnstat-monitor timer-status' 查看状态；"
+      echo "不再需要时 'sudo vnstat-monitor uninstall-timer' 移除。"
+      ;;
+    install-timer)
+      # 用配置频率（或参数覆盖）装 timer
+      if [[ -n "$arg2" ]]; then
+        valid_interval "$arg2" || { echo "Error: 无效频率: $arg2" >&2; exit 1; }
+        minutes="$arg2"
+        persist_interval "$minutes"
+      else
+        minutes="$(read_interval)"
+      fi
+      write_timer "$minutes"
+      ;;
+    set-interval)
+      # 修改频率并重载 timer（持久化）
+      valid_interval "$arg2" || { echo "用法: sudo vnstat-monitor set-interval <分钟>（1-1440 整数）" >&2; exit 1; }
+      persist_interval "$arg2"
+      write_timer "$arg2"
+      ;;
+    timer-status)
+      if systemctl is-active vnstat-monitor.timer >/dev/null 2>&1; then
+        echo "timer: active"
+        systemctl show vnstat-monitor.timer -p NextElapseUSecRealtime -p OnUnitActiveSec -p Persistent 2>/dev/null
+      else
+        echo "timer: 未安装/未激活（运行 'sudo vnstat-monitor setup' 安装）"
+      fi
+      ;;
+    uninstall-timer)
+      systemctl stop vnstat-monitor.timer 2>/dev/null
+      systemctl disable vnstat-monitor.timer 2>/dev/null
+      rm -f "$TIMER_SERVICE" "$TIMER_UNIT"
+      systemctl daemon-reload
+      echo "已移除 systemd timer 与 service（配置保留）"
+      ;;
+    *)
+      echo "未知子命令: $sub" >&2
+      sed -n '4,13p' "$0" >&2
+      exit 1
+      ;;
+  esac
+}
+
 # ============ 子命令分发（timer 管理，不依赖监控依赖） ============
 CMD="${1:-}"
 case "$CMD" in
@@ -24,6 +158,7 @@ case "$CMD" in
     exit $?
     ;;
 esac
+
 
 CONFIG_FILE="${CONFIG_FILE:-/etc/vnstat-monitor.env}"
 
@@ -335,136 +470,3 @@ EOF
     sudo shutdown -h now
 fi
 
-# ============ systemd timer 管理（替代 crontab） ============
-# 用法见文件头。设计：频率持久化到 /etc/vnstat-monitor.env 的 INTERVAL_MINUTES，
-# timer 由 .service(oneshot) + .timer(OnUnitActiveSec) 驱动，改频率即重写 timer 并 reload。
-
-TIMER_SERVICE="/etc/systemd/system/vnstat-monitor.service"
-TIMER_UNIT="/etc/systemd/system/vnstat-monitor.timer"
-
-# 从配置读取当前频率（不存在时用默认 15）
-read_interval() {
-  local f="${CONFIG_FILE:-/etc/vnstat-monitor.env}"
-  if [[ -f "$f" ]]; then
-    local v
-    v=$(grep -E '^INTERVAL_MINUTES=' "$f" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d '"' | tr -d ' ')
-    if [[ -n "$v" ]]; then
-      echo "$v"
-      return 0
-    fi
-  fi
-  echo "15"
-}
-
-# 写/更新配置里的 INTERVAL_MINUTES（原子：tmp + mv，避免并发半写）
-persist_interval() {  # $1=分钟数
-  local f="${CONFIG_FILE:-/etc/vnstat-monitor.env}" minutes="$1"
-  [[ -f "$f" ]] || { echo "Error: 配置不存在: $f" >&2; return 1; }
-  if grep -qE '^INTERVAL_MINUTES=' "$f"; then
-    sed -i "s/^INTERVAL_MINUTES=.*/INTERVAL_MINUTES=\"${minutes}\"/" "$f"
-  else
-    echo "INTERVAL_MINUTES=\"${minutes}\"" >> "$f"
-  fi
-  echo "已更新配置: $f -> INTERVAL_MINUTES=${minutes}"
-}
-
-# 校验分钟数（1-1440 整数）
-valid_interval() {
-  [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 1 && $1 <= 1440 ))
-}
-
-# 生成并启用 systemd timer（核心）
-write_timer() {  # $1=分钟数
-  local minutes="$1"
-  mkdir -p "$(dirname "$TIMER_SERVICE")"
-  cat > "$TIMER_SERVICE" <<EOF
-[Unit]
-Description=vnstat-monitor traffic check (oneshot)
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/vnstat-monitor
-EOF
-  cat > "$TIMER_UNIT" <<EOF
-[Unit]
-Description=Run vnstat-monitor every ${minutes} minutes
-
-[Timer]
-OnUnitActiveSec=${minutes}min
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-EOF
-  systemctl daemon-reload
-  systemctl enable --now vnstat-monitor.timer >/dev/null 2>&1
-  echo "已安装 systemd timer: 每 ${minutes} 分钟执行一次"
-  echo "  ${TIMER_UNIT}"
-}
-
-vnstat_timer_cmd() {  # $1=子命令 $2=可选参数
-  local sub="${1:-}" arg2="${2:-}" minutes
-  case "$sub" in
-    help|-h|--help)
-      sed -n '4,13p' "$0"
-      ;;
-    setup)
-      # 交互式设置：询问频率 → 持久化 → 装 timer
-      minutes="$(read_interval)"
-      printf "触发频率（分钟，1-1440，当前 %s，回车默认 %s）: " "$minutes" "$minutes"
-      # 兼容管道安装（curl | sudo bash 时 stdin 被占用）：优先 /dev/tty
-      if [[ -t 0 ]]; then
-        read -r ans
-      elif [[ -r /dev/tty ]] 2>/dev/null; then
-        read -r ans < /dev/tty
-      else
-        ans=""
-      fi
-      if [[ -n "$ans" ]]; then
-        valid_interval "$ans" || { echo "Error: 无效频率: $ans（需 1-1440 整数）" >&2; exit 1; }
-        minutes="$ans"
-      fi
-      persist_interval "$minutes"
-      write_timer "$minutes"
-      echo "设置完成。可用 'sudo vnstat-monitor timer-status' 查看状态；"
-      echo "不再需要时 'sudo vnstat-monitor uninstall-timer' 移除。"
-      ;;
-    install-timer)
-      # 用配置频率（或参数覆盖）装 timer
-      if [[ -n "$arg2" ]]; then
-        valid_interval "$arg2" || { echo "Error: 无效频率: $arg2" >&2; exit 1; }
-        minutes="$arg2"
-        persist_interval "$minutes"
-      else
-        minutes="$(read_interval)"
-      fi
-      write_timer "$minutes"
-      ;;
-    set-interval)
-      # 修改频率并重载 timer（持久化）
-      valid_interval "$arg2" || { echo "用法: sudo vnstat-monitor set-interval <分钟>（1-1440 整数）" >&2; exit 1; }
-      persist_interval "$arg2"
-      write_timer "$arg2"
-      ;;
-    timer-status)
-      if systemctl is-active vnstat-monitor.timer >/dev/null 2>&1; then
-        echo "timer: active"
-        systemctl show vnstat-monitor.timer -p NextElapseUSecRealtime -p OnUnitActiveSec -p Persistent 2>/dev/null
-      else
-        echo "timer: 未安装/未激活（运行 'sudo vnstat-monitor setup' 安装）"
-      fi
-      ;;
-    uninstall-timer)
-      systemctl stop vnstat-monitor.timer 2>/dev/null
-      systemctl disable vnstat-monitor.timer 2>/dev/null
-      rm -f "$TIMER_SERVICE" "$TIMER_UNIT"
-      systemctl daemon-reload
-      echo "已移除 systemd timer 与 service（配置保留）"
-      ;;
-    *)
-      echo "未知子命令: $sub" >&2
-      sed -n '4,13p' "$0" >&2
-      exit 1
-      ;;
-  esac
-}
