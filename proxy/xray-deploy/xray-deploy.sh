@@ -310,7 +310,7 @@ select_fallback_domain() {
   log_info "服务器国家: ${country}"
 
   # 1) 优先询问自有域名（偷自己，推荐度最高）
-  read -r -p "如有自有域名可作回落（直接回车跳过）: " server_domain
+  read_input "如有自有域名可作回落（直接回车跳过）: " server_domain
   if [[ -n "$server_domain" ]]; then
     echo "$server_domain"
     return 0
@@ -347,9 +347,8 @@ select_fallback_domain() {
 
   [[ ${#candidates[@]} -eq 0 ]] && die "所有候选均未通过测试，请检查服务器网络或换用自有域名"
 
-  # 4) 用户确认（默认第一个）
-  echo
-  read -r -p "选择回落域名 [1-${#candidates[@]}，回车默认 1]: " i
+  # 用户确认（默认第一个）；注意此处输出到 stderr 的空行分隔符不可用 echo（会被 $(...) 捕获污染返回值）
+  read_input "选择回落域名 [1-${#candidates[@]}，回车默认 1]: " i
   i="${i:-1}"
   [[ "$i" =~ ^[0-9]+$ ]] && [[ "$i" -ge 1 ]] && [[ "$i" -le "${#candidates[@]}" ]] || die "无效选择"
   IFS='|' read -r dom note <<<"${candidates[$((i-1))]}"
@@ -360,7 +359,13 @@ select_fallback_domain() {
 gen_uuid() { "${BIN_PATH}" uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid; }
 gen_short_id() { openssl rand -hex 8; }
 gen_reality_keys() {  # 输出 "private_key public_key"
-  "${BIN_PATH}" x25519 | awk '/Private key:/{p=$3} /Public key:/{q=$3} END{print p, q}'
+  # 兼容新旧格式：旧版 "Private key: xxx" / "Public key: xxx"；新版(26.x) "PrivateKey: xxx" / "Password (PublicKey): xxx"
+  "${BIN_PATH}" x25519 2>/dev/null | awk '
+    /PrivateKey:/{p=$2}
+    /Private key:/{p=$3}
+    /Password \(PublicKey\):/{q=$3}
+    /Public key:/{q=$3}
+    END{print p, q}'
 }
 
 # ============ Xray 下载/安装 ============
