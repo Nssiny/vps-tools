@@ -102,6 +102,7 @@ install_tool() {  # $1=tool line
   log_info "已安装脚本: ${dest}/$(basename "$script")"
 
   # 命令入口（工具名直接调用）：wrapper → 脚本库
+  mkdir -p "${CMD_DIR}"   # 命令目录可能不存在（干净系统 /usr/local/bin 也需确保）
   cat > "${CMD_DIR}/${name}" <<EOF
 #!/usr/bin/env bash
 exec "${dest}/$(basename "$script")" "\$@"
