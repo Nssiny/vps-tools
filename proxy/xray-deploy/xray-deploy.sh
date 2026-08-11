@@ -356,10 +356,10 @@ select_fallback_domain() {
   for line in "${sorted[@]}"; do
     [[ "$shown" -ge 6 ]] && break
     IFS='|' read -r _ _ dom note <<<"$line"
-    result="$(test_fallback_domain "$dom")"
+    result="$(test_fallback_domain "$dom")" || true   # 防 set -e：失败(return 1)会终止脚本
     tested=$((tested+1))
     if [[ "$result" == "ok" ]]; then
-      delay="$(measure_handshake_ms "$dom")"
+      delay="$(measure_handshake_ms "$dom")" || true
       shown=$((shown+1))
       candidates+=("$dom|$note|$delay")
     else
@@ -906,9 +906,10 @@ cmd_fallback_test() {  # $1=可选域名（测单个）；无参 = 测全部候�
 
   if [[ -n "$target" ]]; then
     # 单域名模式：直接测试指定域名
-    result="$(test_fallback_domain "$target")"
+    # || true：函数失败(return 1)时命令替换会触发 set -e，必须显式吞掉
+    result="$(test_fallback_domain "$target")" || true
     if [[ "$result" == "ok" ]]; then
-      delay="$(measure_handshake_ms "$target")"
+      delay="$(measure_handshake_ms "$target")" || true
       pass_list+=("$target|自定义|$delay")
       log_info "  ✓ ${target} — ${delay}ms"
     else
@@ -920,9 +921,9 @@ cmd_fallback_test() {  # $1=可选域名（测单个）；无参 = 测全部候�
     for line in "${FALLBACK_CANDIDATES[@]}"; do
       IFS='|' read -r dom c t note <<<"$line"
       log_info "  → ${dom}  (${note}) 测试中..."
-      result="$(test_fallback_domain "$dom")"
+      result="$(test_fallback_domain "$dom")" || true
       if [[ "$result" == "ok" ]]; then
-        delay="$(measure_handshake_ms "$dom")"
+        delay="$(measure_handshake_ms "$dom")" || true
         pass_list+=("$dom|$note|$delay")
         log_info "  ✓ ${dom}  (${note}) — ${delay}ms"
       else
