@@ -66,12 +66,16 @@ die() { log_err "$*"; exit 1; }
 # ============ 交互输入 ============
 # 管道方式（curl | sudo bash -s --）下 stdin 被 curl 占用，改从 /dev/tty 读取。
 # 返回 1 = 无交互终端（纯 CI/脚本场景）。
-read_input() {  # $1=提示 $2=变量名
+read_input() {  # $1=提示 $2=变量名；返回 1 = 无交互终端
+  local _rc=0
   if [[ -t 0 ]]; then
-    read -r -p "$1" "$2"
-  elif [[ -r /dev/tty ]]; then
-    read -r -p "$1" "$2" < /dev/tty
+    read -r -p "$1" "$2" || _rc=1
+  elif [[ -r /dev/tty ]] 2>/dev/null; then
+    read -r -p "$1" "$2" < /dev/tty || _rc=1
   else
+    _rc=1
+  fi
+  if [[ $_rc -ne 0 ]]; then
     printf -v "$2" ""    # set -u 下确保变量已定义，不崩溃
     return 1
   fi
