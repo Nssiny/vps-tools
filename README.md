@@ -4,26 +4,43 @@
 
 ## 快速开始
 
+### 方式一：交互式选择（推荐）
+
+SSH 登录 VPS 后直接运行，会列出工具清单供选择（多选、全部或退出）：
+
 ```bash
-# 推荐：管道方式（自动以 root 运行，兼容普通用户登录的 VPS）
-curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh | sudo bash -s -- install vnstat-monitor
+curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh | sudo bash -s --
+```
 
-# 本地已下载时
-sudo bash install.sh install vnstat-monitor
+```
+可用工具（输入编号多选，逗号分隔；0=全部；q=退出）:
+  1) vnstat-monitor  (monitor/vnstat-monitor/vnstat-monitor.sh)
+  2) xray-deploy     (proxy/xray-deploy/xray-deploy.sh)
+  0) 安装全部
+选择: 1,2
+```
 
+> 交互模式需要终端（TTY）；SSH/物理终端均可。管道、脚本、CI 等无 TTY 场景请用方式二。
+
+### 方式二：命令行指定工具
+
+```bash
 # 安装/更新指定工具（重复执行即覆盖更新，配置保留）
 curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh | sudo bash -s -- install vnstat-monitor
-curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh | sudo bash -s -- update vnstat-monitor
+curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh | sudo bash -s -- install xray-deploy
 
 # 卸载（脚本删除，配置保留防误删密钥）
 curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh | sudo bash -s -- uninstall vnstat-monitor
 
 # 查看可用工具（list 不需要 root）
 bash <(curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh) list
+
+# 本地已下载时
+sudo bash install.sh install vnstat-monitor
 ```
 
-> 非 root 直接运行 install/update/uninstall 会提示需要 root 并给出完整命令；`list` 无需 root。
-> 说明：`bash <(curl ...)` 进程替换需要 bash 且目标目录可写；管道方式 `curl | sudo bash -s --` 更通用（普通用户 VPS 用 sudo 提升），两者等价。
+> **关于 root**：`install/update/uninstall` 必须 root。管道方式 `curl | sudo bash -s --` 自动以 root 运行（普通用户登录的 VPS 也能用）；非 root 直接运行会提示并给出完整 sudo 命令。
+> **关于 TTY**：无参数直接运行 `install.sh` 时，有 TTY 走交互式选择；无 TTY（管道/CI）退化为安装全部，与旧版行为一致。
 
 ## 安装器行为
 

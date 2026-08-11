@@ -3,8 +3,8 @@
 # vps-tools 一键安装/更新/卸载器
 #
 # 用法:
-#   bash <(curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh)            # 安装全部工具
-#   bash <(curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh) install    # 同上
+#   bash <(curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh)            # 交互式选择工具（TTY）
+#   bash <(curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh) install    # 安装全部工具（非 TTY/管道 兼容）
 #   bash <(curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh) install vnstat-monitor   # 安装指定工具
 #   bash <(curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh) update vnstat-monitor    # 更新指定工具
 #   bash <(curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh) uninstall vnstat-monitor # 卸载指定工具
@@ -134,6 +134,36 @@ uninstall_tool() {  # $1=tool line
   log_info "请手动删除 crontab 中的 ${name} 条目（如有）。"
 }
 
+# ============ 交互式工具选择（无参 + TTY 时） ============
+interactive_menu() {
+  echo "可用工具（输入编号多选，逗号分隔；0=全部；q=退出）:"
+  local i=1 line
+  for line in "${TOOLS[@]}"; do
+    echo "  $i) $(tool_field "$line" 1)  ($(tool_field "$line" 2))"
+    i=$((i+1))
+  done
+  echo "  0) 安装全部"
+  read -r -p "选择: " sel
+  case "${sel,,}" in
+    ""|q) log_info "已退出"; return 0 ;;
+    0)
+      local l
+      for l in "${TOOLS[@]}"; do install_tool "$l"; done
+      ;;
+    *)
+      local -a picks=() p
+      IFS=', ' read -r -a picks <<<"$sel"
+      for p in "${picks[@]}"; do
+        if [[ "$p" =~ ^[0-9]+$ ]] && (( p >= 1 && p <= ${#TOOLS[@]} )); then
+          install_tool "${TOOLS[$((p-1))]}"
+        else
+          log_err "无效选择: $p"
+        fi
+      done
+      ;;
+  esac
+}
+
 # ============ 主流程 ============
 main() {
   local action="${1:-install}"
@@ -156,6 +186,9 @@ main() {
         else
           log_err "未知工具: ${tool}"; list_tools; return 1
         fi
+      elif [[ "$action" == "install" ]] && [[ -t 0 ]]; then
+        # 无参 + TTY → 交互式选择；无参 + 非 TTY（管道/CI）→ 安装全部（向后兼容）
+        interactive_menu
       else
         local l
         for l in "${TOOLS[@]}"; do install_tool "$l"; done
