@@ -314,7 +314,8 @@ measure_handshake_ms() {
   local -a samples=()
   for i in 1 2 3; do
     t0="$(date +%s%N)"
-    echo | timeout 6 openssl s_client -connect "${domain}:443" -tls1_3 -servername "$domain" >/dev/null 2>&1
+    # || true：openssl 超时/失败不影响采样（set -e 下命令替换失败会杀死脚本）
+    echo | timeout 6 openssl s_client -connect "${domain}:443" -tls1_3 -servername "$domain" >/dev/null 2>&1 || true
     t1="$(date +%s%N)"
     samples+=("$(( (t1 - t0) / 1000000 ))")
   done
