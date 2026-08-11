@@ -59,6 +59,83 @@ valid_interval() {
   [[ "$1" =~ ^[0-9]+$ ]] && (( $1 >= 1 && $1 <= 1440 ))
 }
 
+# ============ 依赖检查与自动安装 ============
+# 缺依赖自动装（apt-get/dnf/yum/apk），失败才报错退出。
+# 主流程与 setup/install-timer 子命令都调用（安装时即检查，不等首次定时失败）。
+ensure_deps() {
+  local cmd pkg_mgr missing=()
+  for cmd in vnstat jq curl ip awk; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      missing+=("$cmd")
+    fi
+  done
+  [[ ${#missing[@]} -eq 0 ]] && return 0
+
+  echo "缺少依赖: ${missing[*]}，尝试自动安装..."
+
+  # 命令 → 包名映射（发行版差异）
+  pkg_for() {  # $1=cmd $2=pkg_mgr
+    case "$1" in
+      ip)
+        if [[ "$2" == "apt-get" ]]; then echo "iproute2"; else echo "iproute"; fi
+        ;;
+      awk) echo "gawk" ;;
+      *)   echo "$1" ;;
+    esac
+  }
+
+  # 包管理器探测（Alpine 优先）
+  PKG_MGR=""
+  if command -v apk >/dev/null 2>&1; then
+    PKG_MGR="apk"
+  elif command -v apt-get >/dev/null 2>&1; then
+    PKG_MGR="apt-get"
+  elif command -v dnf >/dev/null 2>&1; then
+    PKG_MGR="dnf"
+  elif command -v yum >/dev/null 2>&1; then
+    PKG_MGR="yum"
+  fi
+  if [[ -z "$PKG_MGR" ]]; then
+    echo "Error: 不支持的包管理器（apk/apt-get/dnf/yum 均不可用），请手动安装: ${missing[*]}"
+    exit 1
+  fi
+
+  # root 检测：非 root 且有 sudo 则用 sudo
+  SUDO=""
+  if [[ $EUID -ne 0 ]]; then
+    if command -v sudo >/dev/null 2>&1; then
+      SUDO="sudo"
+    else
+      echo "Error: 需要 root 权限安装依赖（当前非 root 且无 sudo），请手动安装: ${missing[*]}"
+      exit 1
+    fi
+  fi
+
+  # 组装包名并安装
+  local pkgs=()
+  for cmd in "${missing[@]}"; do
+    pkgs+=("$(pkg_for "$cmd" "$PKG_MGR")")
+  done
+  echo "安装: ${pkgs[*]} (via $PKG_MGR)"
+  if [[ "$PKG_MGR" == "apt-get" ]]; then
+    $SUDO apt-get update -y >/dev/null 2>&1 || { echo "Error: apt-get update 失败"; exit 1; }
+    $SUDO apt-get install -y "${pkgs[@]}" || { echo "Error: 依赖安装失败"; exit 1; }
+  elif [[ "$PKG_MGR" == "apk" ]]; then
+    $SUDO apk add --no-cache "${pkgs[@]}" || { echo "Error: 依赖安装失败"; exit 1; }
+  else
+    $SUDO "$PKG_MGR" install -y "${pkgs[@]}" || { echo "Error: 依赖安装失败"; exit 1; }
+  fi
+
+  # 安装后复查
+  for cmd in "${missing[@]}"; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      echo "Error: Required command '$cmd' 安装后仍不可用，请手动安装。"
+      exit 1
+    fi
+  done
+  echo "依赖安装完成。"
+}
+
 # ============ 全配置项交互式设置 ============
 # 交互读取一个值：提示当前值/默认值，回车保留，输入新值校验后返回
 # 注意：提示语必须输出到 stderr（本函数返回值靠 stdout $(...) 捕获，提示进 stdout 会污染返回值）
@@ -233,7 +310,8 @@ vnstat_timer_cmd() {  # $1=子命令 $2=可选参数
       sed -n '4,13p' "$0"
       ;;
     setup)
-      # 交互式设置：全配置向导 → 迁移旧 crontab → 装 timer
+      # 交互式设置：先确保依赖 → 全配置向导 → 迁移旧 crontab → 装 timer
+      ensure_deps
       interactive_config
       migrate_from_crontab
       write_timer "$(read_interval)"
@@ -241,7 +319,8 @@ vnstat_timer_cmd() {  # $1=子命令 $2=可选参数
       echo "不再需要时 'sudo vnstat-monitor uninstall-timer' 移除。"
       ;;
     install-timer)
-      # 用配置频率（或参数覆盖）装 timer；顺带迁移旧 crontab
+      # 用配置频率（或参数覆盖）装 timer；顺带迁移旧 crontab；先确保依赖
+      ensure_deps
       if [[ -n "$arg2" ]]; then
         valid_interval "$arg2" || { echo "Error: 无效频率: $arg2" >&2; exit 1; }
         minutes="$arg2"
@@ -309,79 +388,8 @@ TOTAL_GB="${TOTAL_GB:-0}"
 OFFSET_GB="${OFFSET_GB:-0}"
 SHUTDOWN_PERCENT="${SHUTDOWN_PERCENT:-95}"
 
-# 1. 依赖检查与自动安装（2026-08-08：缺依赖自动装，失败才报错退出）
-MISSING_CMDS=()
-for cmd in vnstat jq curl ip awk; do
-    if ! command -v "$cmd" >/dev/null 2>&1; then
-        MISSING_CMDS+=("$cmd")
-    fi
-done
-
-if [[ ${#MISSING_CMDS[@]} -gt 0 ]]; then
-    echo "缺少依赖: ${MISSING_CMDS[*]}，尝试自动安装..."
-
-    # 命令 → 包名映射（发行版差异）
-    pkg_for() {  # $1=cmd
-        case "$1" in
-            ip)
-                if [[ "$PKG_MGR" == "apt-get" ]]; then
-                    echo "iproute2"     # Debian/Ubuntu
-                else
-                    echo "iproute"      # RHEL/CentOS/Alma/Rocky
-                fi
-                ;;
-            awk) echo "gawk" ;;         # Debian 默认 mawk 亦可用，装 gawk 更稳
-            *)   echo "$1" ;;
-        esac
-    }
-
-    # 包管理器探测
-    PKG_MGR=""
-    if command -v apt-get >/dev/null 2>&1; then
-        PKG_MGR="apt-get"
-    elif command -v dnf >/dev/null 2>&1; then
-        PKG_MGR="dnf"
-    elif command -v yum >/dev/null 2>&1; then
-        PKG_MGR="yum"
-    fi
-    if [[ -z "$PKG_MGR" ]]; then
-        echo "Error: 不支持的包管理器（apt-get/dnf/yum 均不可用），请手动安装: ${MISSING_CMDS[*]}"
-        exit 1
-    fi
-
-    # root 检测：非 root 且有 sudo 则用 sudo
-    SUDO=""
-    if [[ $EUID -ne 0 ]]; then
-        if command -v sudo >/dev/null 2>&1; then
-            SUDO="sudo"
-        else
-            echo "Error: 需要 root 权限安装依赖（当前非 root 且无 sudo），请手动安装: ${MISSING_CMDS[*]}"
-            exit 1
-        fi
-    fi
-
-    # 组装包名并安装
-    PKGS=()
-    for cmd in "${MISSING_CMDS[@]}"; do
-        PKGS+=("$(pkg_for "$cmd")")
-    done
-    echo "安装: ${PKGS[*]} (via $PKG_MGR)"
-    if [[ "$PKG_MGR" == "apt-get" ]]; then
-        $SUDO apt-get update -y >/dev/null 2>&1 || { echo "Error: apt-get update 失败"; exit 1; }
-        $SUDO apt-get install -y "${PKGS[@]}" || { echo "Error: 依赖安装失败"; exit 1; }
-    else
-        $SUDO "$PKG_MGR" install -y "${PKGS[@]}" || { echo "Error: 依赖安装失败"; exit 1; }
-    fi
-
-    # 安装后复查
-    for cmd in "${MISSING_CMDS[@]}"; do
-        if ! command -v "$cmd" >/dev/null 2>&1; then
-            echo "Error: Required command '$cmd' 安装后仍不可用，请手动安装。"
-            exit 1
-        fi
-    done
-    echo "依赖安装完成。"
-fi
+# 1. 依赖检查与自动安装（缺依赖自动装；子命令 setup/install-timer 同样检查）
+ensure_deps
 
 # 2. 自动检测网卡
 if [[ -z "$INTERFACE" || "$INTERFACE" == "auto" ]]; then
