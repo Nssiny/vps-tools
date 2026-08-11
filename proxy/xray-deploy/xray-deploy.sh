@@ -277,20 +277,28 @@ detect_server_country() {
 }
 
 # 测试回落域名: 返回 0=通过；输出原因到 stdout
-# 兼容 OpenSSL 1.1.1/3.x：3.x 的 s_client 输出 "New, TLSv1.3, Cipher is ..."，
-# 不再有 "Protocol  : TLSv1.3" 行。X25519 不单独 grep——-groups X25519 参数
-# 已限定客户端仅提供 X25519，TLSv1.3 握手成功即证明服务端支持（部分版本 TLS1.3 无 Server Temp Key 行）。
+# 兼容 OpenSSL 1.1.1/3.x/3.5：3.x+ 的 s_client 输出 "New, TLSv1.3, Cipher is ..."，
+# 3.5 输出 "Protocol: TLSv1.3"（单冒号）。X25519 不单独 grep——-groups X25519 参数
+# 已限定客户端仅提供 X25519，TLSv1.3 握手成功即证明服务端支持（TLS1.3 无 Server Temp Key 行）。
+# HTTP 检查放宽：REALITY 回落只需 TLS 层正常；301/302 同站跳转、403 WAF 均可用，
+# 仅拒绝 4xx/5xx 服务错误与 000 连接失败（加 UA 降低 WAF 误杀）。
 test_fallback_domain() {
   local domain="$1" out code
   # TLS1.3 + H2 + X25519(隐含) + 非 Cloudflare + 证书有效
   out="$(echo | timeout 12 openssl s_client -connect "${domain}:443" -tls1_3 -alpn h2 -groups X25519 -servername "$domain" 2>&1 || true)"
-  grep -qE "New, TLSv1\.3|Protocol  : TLSv1\.3" <<<"$out" || { echo "TLSv1.3 不支持"; return 1; }
+  grep -qE "New, TLSv1\.3|Protocol: TLSv1\.3|Protocol  : TLSv1\.3" <<<"$out" || { echo "TLSv1.3 不支持"; return 1; }
   grep -qE "ALPN protocol: h2" <<<"$out" || { echo "不支持 H2"; return 1; }
   grep -qi "cloudflare" <<<"$out" && { echo "Cloudflare CDN（不推荐）"; return 1; }
   grep -q "Verify return code: 0" <<<"$out" || { echo "证书校验失败"; return 1; }
-  # 非跳转：HTTP 状态应为 2xx
-  code="$(curl -sI --max-time 10 -o /dev/null -w '%{http_code}' "https://${domain}/" 2>/dev/null || echo 000)"
-  [[ "$code" =~ ^2 ]] || { echo "HTTP ${code}（跳转/异常）"; return 1; }
+  # 非跳转/非错误：接受 2xx/3xx；拒绝 000（连接失败）、4xx/5xx（服务错误）
+  code="$(curl -sI --max-time 10 -o /dev/null -w '%{http_code}' -A 'Mozilla/5.0' "https://${domain}/" 2>/dev/null || echo 000)"
+  if [[ "$code" =~ ^[23] ]]; then
+    :
+  elif [[ "$code" == "000" ]]; then
+    echo "连接失败（HTTP 000）"; return 1
+  elif [[ "$code" =~ ^[45] ]]; then
+    echo "HTTP ${code}（服务错误）"; return 1
+  fi
   echo "ok"
   return 0
 }
