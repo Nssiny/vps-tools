@@ -42,6 +42,7 @@ CONFIG_DIR="/etc"                     # 配置目标目录
 #   backup/    备份类
 TOOLS=(
   "vnstat-monitor|monitor/vnstat-monitor/vnstat-monitor.sh|monitor/vnstat-monitor/vnstat-monitor.env.example|${CONFIG_DIR}/vnstat-monitor.env|*/15 * * * * /usr/local/bin/vnstat-monitor/vnstat-monitor.sh >/dev/null 2>&1"
+  "xray-deploy|proxy/xray-deploy/xray-deploy.sh|||"
 )
 
 # ============ 辅助函数 ============

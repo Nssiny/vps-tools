@@ -44,6 +44,8 @@ vps-tools/
 │       └── vnstat-monitor.env.example
 ├── network/            # 网络类（路由/隧道/分流）
 ├── proxy/              # 代理类（xray/sing-box 等辅助脚本）
+│   └── xray-deploy/
+│       └── xray-deploy.sh
 ├── utils/              # 通用工具（DDNS/证书等）
 └── backup/             # 备份类
 ```
@@ -55,6 +57,7 @@ vps-tools/
 | 工具 | 分类 | 用途 | 依赖 |
 |---|---|---|---|
 | [vnstat-monitor](monitor/vnstat-monitor/) | monitor | vnStat + Telegram 流量监控：进度条/偏移校准/熔断关机/无限流量模式；原地更新消息防刷屏（2026-08-08 修复孤儿卡片：错误分类+原子写状态） | vnstat, jq, curl, gawk, iproute2 |
+| [xray-deploy](proxy/xray-deploy/) | proxy | Xray 一键部署：交互菜单/子命令双模式；VLESS-TCP-XTLS-Vision-REALITY 默认协议（协议注册表可扩展）；回落域名半自动筛选；MetaCubeX geosite/geoip 每周自动更新；生成 mihomo/sing-box 客户端节点；服务端 routing 防国内访问 | curl, unzip, jq, openssl |
 
 ## 安全约定
 
