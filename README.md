@@ -122,6 +122,8 @@ sudo xray-deploy install       # 首次部署向导：选回落域名 → 生成
 xray-deploy info               # 查看节点信息（明文 + mihomo/sing-box 客户端配置片段，无需 root）
 xray-deploy config show        # 查看服务端 config.json
 sudo xray-deploy config edit   # 编辑 config.json（保存后自动 xray -test 校验并重载）
+xray-deploy fallback-test      # 测试全部回落候选的握手延迟并排序（部署前选型/诊断用）
+xray-deploy fallback-test www.example.com   # 测试指定域名是否可作回落
 sudo xray-deploy update-geo    # 手动更新 geosite/geoip（脚本已配 /etc/cron.weekly/xray-geo-update 每周自动）
 sudo xray-deploy upgrade       # 升级 Xray 二进制（失败自动回滚）
 sudo xray-deploy protocol add/remove/edit/list   # 多协议管理（端口/SNI/UUID）

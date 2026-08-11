@@ -895,12 +895,62 @@ cmd_config() {  # $1=show|edit
   esac
 }
 
+# ============ 回落域名测试（独立功能） ============
+# 测试候选回落域名的握手延迟并排序，供部署前选型/诊断用（不影响部署状态）
+cmd_fallback_test() {  # $1=可选域名（测单个）；无参 = 测全部候选
+  local target="${1:-}" dom c t note i result delay
+  local -a pass_list=() fail_list=()
+
+  log_info "回落域名握手延迟测试（TLS1.3+H2+X25519+非跳转+非Cloudflare）..."
+
+  if [[ -n "$target" ]]; then
+    # 单域名模式：直接测试指定域名
+    result="$(test_fallback_domain "$target")"
+    if [[ "$result" == "ok" ]]; then
+      delay="$(measure_handshake_ms "$target")"
+      pass_list+=("$target|自定义|$delay")
+      log_info "  ✓ ${target} — ${delay}ms"
+    else
+      fail_list+=("$target")
+      log_warn "  ✗ ${target} — ${result}"
+    fi
+  else
+    # 全部候选模式
+    for line in "${FALLBACK_CANDIDATES[@]}"; do
+      IFS='|' read -r dom c t note <<<"$line"
+      result="$(test_fallback_domain "$dom")"
+      if [[ "$result" == "ok" ]]; then
+        delay="$(measure_handshake_ms "$dom")"
+        pass_list+=("$dom|$note|$delay")
+      else
+        fail_list+=("$dom")
+        log_warn "  ✗ ${dom} — ${result}"
+      fi
+    done
+  fi
+
+  # 按延迟排序展示通过的
+  if [[ ${#pass_list[@]} -gt 0 ]]; then
+    IFS=$'\n' pass_list=($(printf '%s\n' "${pass_list[@]}" | sort -t'|' -k3,3n)); unset IFS
+    log_info "通过候选按握手延迟排序（最低在前）:"
+    for ((i=0; i<${#pass_list[@]}; i++)); do
+      IFS='|' read -r dom note delay <<<"${pass_list[$i]}"
+      log_info "  [$((i+1))] ${dom}  (${note}) ✓ ${delay}ms"
+    done
+  else
+    log_err "无候选通过测试"
+  fi
+
+  [[ ${#pass_list[@]} -gt 0 ]]
+}
+
 # ============ 子命令分发 ============
 CMD="${1:-menu}"
 case "$CMD" in
   install)       cmd_install ;;
   info)          cmd_info ;;
   config)        cmd_config "${2:-show}" ;;
+  fallback-test) cmd_fallback_test "${2:-}" ;;
   update-geo)    update_geo "${2:-}" ;;
   upgrade)       cmd_upgrade ;;
   status)        need_root; service_status ;;
@@ -916,7 +966,7 @@ case "$CMD" in
     esac
     ;;
   menu) : ;;  # 走交互菜单
-  *) die "未知命令: $CMD（支持 install/info/config/update-geo/upgrade/status/restart/uninstall/protocol）" ;;
+  *) die "未知命令: $CMD（支持 install/info/config/fallback-test/update-geo/upgrade/status/restart/uninstall/protocol）" ;;
 esac
 
 # ============ 交互菜单 ============
@@ -927,14 +977,15 @@ if [[ "$CMD" == "menu" ]]; then
     echo "  1) 安装/更新 Xray（首次部署向导）"
     echo "  2) 协议管理（新增/删除/修改）"
     echo "  3) 查看节点信息 (info)"
-    echo "  4) 更新 geo 数据 (geosite/geoip)"
-    echo "  5) 升级 Xray 版本"
-    echo "  6) 查看/编辑配置 (config)"
-    echo "  7) 服务状态"
-    echo "  8) 重启服务"
-    echo "  9) 卸载"
+    echo "  4) 回落域名测试 (fallback-test)"
+    echo "  5) 更新 geo 数据 (geosite/geoip)"
+    echo "  6) 升级 Xray 版本"
+    echo "  7) 查看/编辑配置 (config)"
+    echo "  8) 服务状态"
+    echo "  9) 重启服务"
+    echo "  10) 卸载"
     echo "  0) 退出"
-    read_input "请选择 [0-9]: " choice || { log_warn "无交互终端，已退出"; break; }
+    read_input "请选择 [0-10]: " choice || { log_warn "无交互终端，已退出"; break; }
     case "${choice:-0}" in
       1) cmd_install ;;
       2)
@@ -948,9 +999,21 @@ if [[ "$CMD" == "menu" ]]; then
         esac
         ;;
       3) cmd_info ;;
-      4) update_geo ;;
-      5) cmd_upgrade ;;
-      6)
+      4)
+        echo "  1) 测试全部候选  2) 测试指定域名"
+        read_input "选择 [1-2]: " fc || { log_warn "无交互终端"; continue; }
+        case "${fc:-1}" in
+          1) cmd_fallback_test ;;
+          2)
+            read_input "输入要测试的域名: " fdom || { log_warn "无交互终端"; continue; }
+            cmd_fallback_test "$fdom"
+            ;;
+          *) log_warn "无效选择" ;;
+        esac
+        ;;
+      5) update_geo ;;
+      6) cmd_upgrade ;;
+      7)
         echo "  1) 查看配置  2) 编辑配置"
         read_input "选择 [1-2]: " cc || { log_warn "无交互终端"; continue; }
         case "${cc:-1}" in
@@ -959,9 +1022,9 @@ if [[ "$CMD" == "menu" ]]; then
           *) log_warn "无效选择" ;;
         esac
         ;;
-      7) need_root; service_status ;;
-      8) need_root; service_restart ;;
-      9) cmd_uninstall ;;
+      8) need_root; service_status ;;
+      9) need_root; service_restart ;;
+      10) cmd_uninstall ;;
       0) break ;;
       *) log_warn "无效选择" ;;
     esac
