@@ -114,10 +114,12 @@ EOF
   log_info "已生成命令: ${CMD_DIR}/${name}（直接运行 ${name} 调用）"
 
   # 配置模板
+  local env_was_created=0
   if [[ -n "$env_tpl" && -n "$env_tgt" ]]; then
     if [[ -f "$env_tgt" ]]; then
       log_warn "配置已存在，跳过: ${env_tgt}（如需重配请手动删除后重装）"
     else
+      env_was_created=1
       mkdir -p "$(dirname "$env_tgt")"
       if curl -fsSL --max-time 60 "${BASE_URL}/${env_tpl}" -o "$env_tgt"; then
         chmod 600 "$env_tgt"
@@ -129,13 +131,17 @@ EOF
   fi
 
   # 交互式 setup（替代 cron 提示）：工具自带 setup 子命令（如 systemd timer 管理）
+  # 仅初次安装 / 卸载重装（env 新生成）触发交互；更新（env 已存在）保留原配置
   if [[ "$setup_flag" == "1" ]]; then
-    if [[ -t 0 ]] || [[ -r /dev/tty ]] 2>/dev/null; then
-      log_info "${name} 支持交互式配置（触发频率等）。调用: ${CMD_DIR}/${name} setup"
-      echo "    如当前为管道安装（stdin 被占用），可稍后手动运行: sudo ${name} setup"
-      "${CMD_DIR}/${name}" setup
+    if [[ "$env_was_created" == "1" ]]; then
+      if [[ -t 0 ]] || [[ -r /dev/tty ]] 2>/dev/null; then
+        log_info "${name} 首次安装，进入交互式配置（触发频率等）"
+        "${CMD_DIR}/${name}" setup
+      else
+        log_warn "无交互终端，跳过交互式配置。稍后手动运行: sudo ${name} setup"
+      fi
     else
-      log_warn "无交互终端，跳过交互式配置。稍后手动运行: sudo ${name} setup"
+      log_info "${name} 配置已存在（更新），保留原配置。如需修改: sudo ${name} setup"
     fi
   elif [[ -n "$cron" ]]; then
     # cron 提示（必须 root crontab：脚本 source /etc/<tool>.env(600) 且写 /var/lib、改 /etc 配置、可能 shutdown）
