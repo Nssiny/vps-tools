@@ -915,13 +915,15 @@ cmd_fallback_test() {  # $1=可选域名（测单个）；无参 = 测全部候�
       log_warn "  ✗ ${target} — ${result}"
     fi
   else
-    # 全部候选模式
+    # 全部候选模式：逐个测试并立即显示结果（避免长耗时无反馈）
     for line in "${FALLBACK_CANDIDATES[@]}"; do
       IFS='|' read -r dom c t note <<<"$line"
+      log_info "  → ${dom}  (${note}) 测试中..."
       result="$(test_fallback_domain "$dom")"
       if [[ "$result" == "ok" ]]; then
         delay="$(measure_handshake_ms "$dom")"
         pass_list+=("$dom|$note|$delay")
+        log_info "  ✓ ${dom}  (${note}) — ${delay}ms"
       else
         fail_list+=("$dom")
         log_warn "  ✗ ${dom} — ${result}"
