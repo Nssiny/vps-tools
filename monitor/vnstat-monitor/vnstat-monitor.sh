@@ -291,7 +291,9 @@ EOF
 Description=Run vnstat-monitor every ${minutes} minutes
 
 [Timer]
-OnUnitActiveSec=${minutes}min
+# 固定整点每 N 分钟触发（OnCalendar 保证首次即安排，单独 OnUnitActiveSec
+# 在 service 从未被 timer 激活时无参照、不触发——systemd 已知行为）
+OnCalendar=*:0/${minutes}
 Persistent=true
 
 [Install]
@@ -299,7 +301,9 @@ WantedBy=timers.target
 EOF
   systemctl daemon-reload
   systemctl enable --now vnstat-monitor.timer >/dev/null 2>&1
-  echo "已安装 systemd timer: 每 ${minutes} 分钟执行一次"
+  # enable --now 对已运行的 timer 不重载新配置；restart 强制生效（未运行=启动）
+  systemctl restart vnstat-monitor.timer >/dev/null 2>&1 || true
+  echo "已安装 systemd timer: 每 ${minutes} 分钟执行一次（整点 0/${minutes} 触发）"
   echo "  ${TIMER_UNIT}"
 }
 
