@@ -33,12 +33,14 @@ CMD_DIR="/usr/local/bin"                 # 命令入口目录
 VPS_TOOLS_CMD="${CMD_DIR}/vps-tools"     # 管理命令入口
 
 # ============ 工具注册表 ============
-# 每行一个工具: name|script|env_template|env_target|cron_line
+# 每行一个工具: name|script|env_template|env_target|cron_line|interactive_setup
 #   name        工具名（install/update/uninstall 参数）
 #   script      install.sh 里要下载的脚本文件名（相对仓库根，按分类目录组织）
 #   env_template 配置模板文件名（相对仓库根，可为空 = 无配置）
 #   env_target  配置安装目标路径（env_template 为空时忽略）
 #   cron_line   建议的 crontab 行（可为空 = 不提示；含特殊字符需注意转义）
+#   interactive_setup 安装后是否调用交互式 setup（1=是，工具脚本需支持 setup 子命令；
+#                     通常配合 systemd timer 替代 crontab；无 TTY 时跳过并提示手动运行）
 #
 # 分类目录约定（新增脚本按功能域归类）:
 #   monitor/   监控类（流量/资源/服务状态）
@@ -47,8 +49,8 @@ VPS_TOOLS_CMD="${CMD_DIR}/vps-tools"     # 管理命令入口
 #   utils/     通用工具（DDNS/证书/备份等）
 #   backup/    备份类
 TOOLS=(
-  "vnstat-monitor|monitor/vnstat-monitor/vnstat-monitor.sh|monitor/vnstat-monitor/vnstat-monitor.env.example|${CONFIG_DIR}/vnstat-monitor.env|*/15 * * * * /usr/local/bin/vnstat-monitor >/dev/null 2>&1"
-  "xray-deploy|proxy/xray-deploy/xray-deploy.sh|||"
+  "vnstat-monitor|monitor/vnstat-monitor/vnstat-monitor.sh|monitor/vnstat-monitor/vnstat-monitor.env.example|${CONFIG_DIR}/vnstat-monitor.env||1"
+  "xray-deploy|proxy/xray-deploy/xray-deploy.sh|||0"
 )
 
 # ============ 辅助函数 ============
@@ -79,12 +81,13 @@ list_tools() {
 
 # ============ 核心操作 ============
 install_tool() {  # $1=tool line
-  local line="$1" name script env_tpl env_tgt cron
+  local line="$1" name script env_tpl env_tgt cron setup_flag
   name=$(tool_field "$line" 1)
   script=$(tool_field "$line" 2)
   env_tpl=$(tool_field "$line" 3)
   env_tgt=$(tool_field "$line" 4)
   cron=$(tool_field "$line" 5)
+  setup_flag=$(tool_field "$line" 6)
 
   local dest="${INSTALL_DIR}/${name}"
   mkdir -p "$dest"
@@ -125,8 +128,17 @@ EOF
     fi
   fi
 
-  # cron 提示（必须 root crontab：脚本 source /etc/<tool>.env(600) 且写 /var/lib、改 /etc 配置、可能 shutdown）
-  if [[ -n "$cron" ]]; then
+  # 交互式 setup（替代 cron 提示）：工具自带 setup 子命令（如 systemd timer 管理）
+  if [[ "$setup_flag" == "1" ]]; then
+    if [[ -t 0 ]] || [[ -r /dev/tty ]] 2>/dev/null; then
+      log_info "${name} 支持交互式配置（触发频率等）。调用: ${CMD_DIR}/${name} setup"
+      echo "    如当前为管道安装（stdin 被占用），可稍后手动运行: sudo ${name} setup"
+      "${CMD_DIR}/${name}" setup
+    else
+      log_warn "无交互终端，跳过交互式配置。稍后手动运行: sudo ${name} setup"
+    fi
+  elif [[ -n "$cron" ]]; then
+    # cron 提示（必须 root crontab：脚本 source /etc/<tool>.env(600) 且写 /var/lib、改 /etc 配置、可能 shutdown）
     log_info "建议添加 cron —— 用 root crontab（sudo crontab -e），普通用户 crontab 读不到 /etc 配置且无写权限:"
     echo "    $cron"
   fi

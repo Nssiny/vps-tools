@@ -100,14 +100,21 @@ sudo vnstat-monitor            # 手动跑一次（首次会初始化 vnstat 数
    ```bash
    sudo nano /etc/vnstat-monitor.env
    ```
-   `VPS_NAME`（显示名）、`TG_BOT_TOKEN`、`TG_CHAT_ID` 为必填；`LIMIT_GB`（流量上限，超过触发提醒）、`AUTO_SHUTDOWN`（超过上限是否关机）按需配置。
+   `VPS_NAME`（显示名）、`TG_BOT_TOKEN`、`TG_CHAT_ID` 为必填；`LIMIT_GB`（流量上限，超过触发提醒）、`AUTO_SHUTDOWN`（超过上限是否关机）、`INTERVAL_MINUTES`（触发频率，分钟，默认 15）按需配置。
 2. 手动验证：`sudo vnstat-monitor`，应收到一条 Telegram 流量卡片。
-3. 设置定时（建议每 15 分钟）：
+3. **设置定时（systemd timer，替代 crontab）**——安装时若交互安装会自动调用，也可手动：
    ```bash
-   sudo crontab -e
-   # 追加：
-   */15 * * * * /usr/local/bin/vnstat-monitor >/dev/null 2>&1
+   sudo vnstat-monitor setup              # 交互式：设置频率 + 安装 timer
+   # 或直接指定频率：
+   sudo vnstat-monitor install-timer 30   # 每 30 分钟
    ```
+4. 修改触发频率（配置持久化 + timer 自动重载）：
+   ```bash
+   sudo vnstat-monitor set-interval 30    # 改为每 30 分钟
+   sudo vnstat-monitor timer-status       # 查看 timer 状态
+   sudo vnstat-monitor uninstall-timer    # 移除定时（保留配置与脚本）
+   ```
+   > 旧版本用 crontab（`*/15 * * * * /usr/local/bin/vnstat-monitor`）的机器，`uninstall-timer` 之外还需手动删除 crontab 中对应行。
 
 ### xray-deploy — Xray 代理服务部署
 
