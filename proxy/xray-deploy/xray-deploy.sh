@@ -72,6 +72,7 @@ read_input() {  # $1=提示 $2=变量名
   elif [[ -r /dev/tty ]]; then
     read -r -p "$1" "$2" < /dev/tty
   else
+    printf -v "$2" ""    # set -u 下确保变量已定义，不崩溃
     return 1
   fi
 }
