@@ -11,7 +11,8 @@
 #   bash <(curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh) uninstall vnstat-monitor # 卸载指定工具
 #
 # 特性:
-#   - 脚本下载到 /usr/local/bin/<tool>/ 下，与系统文件隔离，卸载干净
+#   - 脚本下载到 /usr/local/lib/vps-tools/<tool>/ 下，与系统文件隔离，卸载干净
+#   - 每个工具自动生成命令入口 /usr/local/bin/<tool>，直接以工具名调用
 #   - 配置模板首次安装时复制到 /etc/<tool>.env（已存在则不覆盖），真实密钥由用户填写
 #   - 提示 cron 添加（不自动改 crontab，避免破坏现有条目）
 #   - 幂等：重复 install = 覆盖更新
@@ -26,9 +27,10 @@ GH_REPO="vps-tools"
 GH_BRANCH="main"
 BASE_URL="https://raw.githubusercontent.com/${GH_USER}/${GH_REPO}/${GH_BRANCH}"
 
-INSTALL_DIR="/usr/local/bin"          # 脚本安装根目录
-CONFIG_DIR="/etc"                     # 配置目标目录
-VPS_TOOLS_CMD="${INSTALL_DIR}/vps-tools"  # 管理命令入口
+INSTALL_DIR="/usr/local/lib/vps-tools"   # 脚本库根目录（与命令入口分离）
+CONFIG_DIR="/etc"                        # 配置目标目录
+CMD_DIR="/usr/local/bin"                 # 命令入口目录
+VPS_TOOLS_CMD="${CMD_DIR}/vps-tools"     # 管理命令入口
 
 # ============ 工具注册表 ============
 # 每行一个工具: name|script|env_template|env_target|cron_line
@@ -45,7 +47,7 @@ VPS_TOOLS_CMD="${INSTALL_DIR}/vps-tools"  # 管理命令入口
 #   utils/     通用工具（DDNS/证书/备份等）
 #   backup/    备份类
 TOOLS=(
-  "vnstat-monitor|monitor/vnstat-monitor/vnstat-monitor.sh|monitor/vnstat-monitor/vnstat-monitor.env.example|${CONFIG_DIR}/vnstat-monitor.env|*/15 * * * * /usr/local/bin/vnstat-monitor/vnstat-monitor.sh >/dev/null 2>&1"
+  "vnstat-monitor|monitor/vnstat-monitor/vnstat-monitor.sh|monitor/vnstat-monitor/vnstat-monitor.env.example|${CONFIG_DIR}/vnstat-monitor.env|*/15 * * * * /usr/local/bin/vnstat-monitor >/dev/null 2>&1"
   "xray-deploy|proxy/xray-deploy/xray-deploy.sh|||"
 )
 
@@ -90,10 +92,22 @@ install_tool() {  # $1=tool line
   log_info "下载 ${name}: ${BASE_URL}/${script}"
   if ! curl -fsSL --max-time 60 "${BASE_URL}/${script}" -o "${dest}/$(basename "$script")"; then
     log_err "下载失败: ${script}（检查网络或仓库路径）"
+    # 清理失败产生的空目录，避免残留坏状态
+    if [[ -d "$dest" ]] && [[ -z "$(ls -A "$dest" 2>/dev/null)" ]]; then
+      rmdir "$dest" 2>/dev/null || true
+    fi
     return 1
   fi
   chmod +x "${dest}/$(basename "$script")"
-  log_info "已安装: ${dest}/$(basename "$script")"
+  log_info "已安装脚本: ${dest}/$(basename "$script")"
+
+  # 命令入口（工具名直接调用）：wrapper → 脚本库
+  cat > "${CMD_DIR}/${name}" <<EOF
+#!/usr/bin/env bash
+exec "${dest}/$(basename "$script")" "\$@"
+EOF
+  chmod +x "${CMD_DIR}/${name}"
+  log_info "已生成命令: ${CMD_DIR}/${name}（直接运行 ${name} 调用）"
 
   # 配置模板
   if [[ -n "$env_tpl" && -n "$env_tgt" ]]; then
@@ -129,6 +143,11 @@ uninstall_tool() {  # $1=tool line
     log_info "已删除脚本目录: ${INSTALL_DIR}/${name}"
   else
     log_warn "未找到脚本目录: ${INSTALL_DIR}/${name}"
+  fi
+  # 命令入口
+  if [[ -f "${CMD_DIR}/${name}" ]]; then
+    rm -f "${CMD_DIR}/${name}"
+    log_info "已删除命令: ${CMD_DIR}/${name}"
   fi
 
   if [[ -f "$env_tgt" ]]; then

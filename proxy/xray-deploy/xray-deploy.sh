@@ -43,7 +43,9 @@ set -euo pipefail
 
 # ============ 路径常量 ============
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INSTALL_DIR="${XRAY_INSTALL_DIR:-/usr/local/bin/xray-deploy}"
+# 注意：/usr/local/bin/xray-deploy 是 vps-tools 生成的命令入口（wrapper），
+# 二进制/geo 数据放 /usr/local/lib/xray-deploy/，避免与命令冲突
+INSTALL_DIR="${XRAY_INSTALL_DIR:-/usr/local/lib/xray-deploy}"
 CONFIG_DIR="/etc/xray-deploy"
 BIN_PATH="${INSTALL_DIR}/xray"
 STATE_FILE="${CONFIG_DIR}/state.json"
@@ -60,6 +62,19 @@ log_warn() { echo -e "\033[0;33m[WARN]\033[0m $*" >&2; }
 log_err()  { echo -e "\033[0;31m[ERROR]\033[0m $*" >&2; }
 
 die() { log_err "$*"; exit 1; }
+
+# ============ 交互输入 ============
+# 管道方式（curl | sudo bash -s --）下 stdin 被 curl 占用，改从 /dev/tty 读取。
+# 返回 1 = 无交互终端（纯 CI/脚本场景）。
+read_input() {  # $1=提示 $2=变量名
+  if [[ -t 0 ]]; then
+    read -r -p "$1" "$2"
+  elif [[ -r /dev/tty ]]; then
+    read -r -p "$1" "$2" < /dev/tty
+  else
+    return 1
+  fi
+}
 
 need_root() {
   [[ "$(id -u)" -eq 0 ]] || die "需要 root 权限，请用: sudo $0 $*"
@@ -803,11 +818,44 @@ cmd_uninstall() {
   log_info "已卸载（state.json 一并删除，包含密钥）"
 }
 
+# ============ 配置查看/编辑 ============
+cmd_config() {  # $1=show|edit
+  local action="${1:-show}"
+  case "$action" in
+    show)
+      [[ -f "$CONFIG_FILE" ]] || die "尚未生成配置（先 install）"
+      echo "=== ${CONFIG_FILE} ==="
+      cat "$CONFIG_FILE"
+      ;;
+    edit)
+      need_root
+      [[ -f "$CONFIG_FILE" ]] || die "尚未生成配置（先 install）"
+      if command -v nano >/dev/null 2>&1; then
+        nano "$CONFIG_FILE"
+      elif command -v vim >/dev/null 2>&1; then
+        vim "$CONFIG_FILE"
+      else
+        vi "$CONFIG_FILE"
+      fi
+      # 编辑后校验 + 重载
+      if "${BIN_PATH}" run -test -config "$CONFIG_FILE" >/dev/null 2>&1; then
+        service_restart
+        log_info "配置校验通过并已重载服务"
+      else
+        log_err "配置校验失败——请手动修正（服务仍运行旧配置）"
+        return 1
+      fi
+      ;;
+    *) die "config 用法: show|edit" ;;
+  esac
+}
+
 # ============ 子命令分发 ============
 CMD="${1:-menu}"
 case "$CMD" in
   install)       cmd_install ;;
   info)          cmd_info ;;
+  config)        cmd_config "${2:-show}" ;;
   update-geo)    update_geo "${2:-}" ;;
   upgrade)       cmd_upgrade ;;
   status)        need_root; service_status ;;
@@ -823,7 +871,7 @@ case "$CMD" in
     esac
     ;;
   menu) : ;;  # 走交互菜单
-  *) die "未知命令: $CMD（支持 install/info/update-geo/upgrade/status/restart/uninstall/protocol）" ;;
+  *) die "未知命令: $CMD（支持 install/info/config/update-geo/upgrade/status/restart/uninstall/protocol）" ;;
 esac
 
 # ============ 交互菜单 ============
@@ -836,16 +884,17 @@ if [[ "$CMD" == "menu" ]]; then
     echo "  3) 查看节点信息 (info)"
     echo "  4) 更新 geo 数据 (geosite/geoip)"
     echo "  5) 升级 Xray 版本"
-    echo "  6) 服务状态"
-    echo "  7) 重启服务"
-    echo "  8) 卸载"
+    echo "  6) 查看/编辑配置 (config)"
+    echo "  7) 服务状态"
+    echo "  8) 重启服务"
+    echo "  9) 卸载"
     echo "  0) 退出"
-    read -r -p "请选择 [0-8]: " choice
+    read_input "请选择 [0-9]: " choice || { log_warn "无交互终端，已退出"; break; }
     case "${choice:-0}" in
       1) cmd_install ;;
       2)
         echo "  1) 新增协议  2) 删除协议  3) 修改协议  4) 列表"
-        read -r -p "选择 [1-4]: " pc
+        read_input "选择 [1-4]: " pc || { log_warn "无交互终端"; continue; }
         case "${pc:-4}" in
           1) proto_add ;;
           2) proto_remove ;;
@@ -856,9 +905,18 @@ if [[ "$CMD" == "menu" ]]; then
       3) cmd_info ;;
       4) update_geo ;;
       5) cmd_upgrade ;;
-      6) need_root; service_status ;;
-      7) need_root; service_restart ;;
-      8) cmd_uninstall ;;
+      6)
+        echo "  1) 查看配置  2) 编辑配置"
+        read_input "选择 [1-2]: " cc || { log_warn "无交互终端"; continue; }
+        case "${cc:-1}" in
+          1) cmd_config show ;;
+          2) cmd_config edit ;;
+          *) log_warn "无效选择" ;;
+        esac
+        ;;
+      7) need_root; service_status ;;
+      8) need_root; service_restart ;;
+      9) cmd_uninstall ;;
       0) break ;;
       *) log_warn "无效选择" ;;
     esac

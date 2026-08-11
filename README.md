@@ -29,6 +29,8 @@ curl -sSL https://raw.githubusercontent.com/inybit/vps-tools/main/install.sh | s
 
 ```bash
 sudo vps-tools          # 进入交互式管理菜单
+sudo vnstat-monitor     # 直接调用工具（等价于 xray-deploy 等工具名）
+sudo xray-deploy        # Xray 部署/管理入口
 ```
 
 ### 方式二：命令行指定工具（脚本/CI 场景）
@@ -53,7 +55,8 @@ sudo bash install.sh install vnstat-monitor
 
 ## 安装器行为
 
-- 脚本下载到 `/usr/local/bin/<tool>/`，与系统文件隔离，卸载即删目录
+- 脚本下载到 `/usr/local/lib/vps-tools/<tool>/`，与系统文件隔离，卸载即删目录
+- 每个工具自动生成命令入口 `/usr/local/bin/<tool>`，**直接以工具名调用**（如 `vnstat-monitor`、`xray-deploy`、`vps-tools`）
 - 首次安装自动生成配置模板 `/etc/<tool>.env`（`chmod 600`，已存在不覆盖），**需手动填入真实密钥**
 - cron 条目只提示不自动写；**必须用 root crontab（`sudo crontab -e`）**——脚本要 source `/etc/<tool>.env`（600 权限）、写 `/var/lib`、改 `/etc` 配置、可能触发关机，普通用户 crontab 无权限
 - 重复 `install` = 覆盖更新，幂等
@@ -84,6 +87,53 @@ vps-tools/
 |---|---|---|---|
 | [vnstat-monitor](monitor/vnstat-monitor/) | monitor | vnStat + Telegram 流量监控：进度条/偏移校准/熔断关机/无限流量模式；原地更新消息防刷屏（2026-08-08 修复孤儿卡片：错误分类+原子写状态） | vnstat, jq, curl, gawk, iproute2 |
 | [xray-deploy](proxy/xray-deploy/) | proxy | Xray 一键部署：交互菜单/子命令双模式；VLESS-TCP-XTLS-Vision-REALITY 默认协议（协议注册表可扩展）；回落域名半自动筛选；MetaCubeX geosite/geoip 每周自动更新；生成 mihomo/sing-box 客户端节点；服务端 routing 防国内访问 | curl, unzip, jq, openssl |
+
+## 工具使用教程
+
+### vnstat-monitor — vnStat 流量监控（Telegram 推送）
+
+```bash
+sudo vnstat-monitor            # 手动跑一次（首次会初始化 vnstat 数据库）
+```
+
+1. 安装后编辑配置，填入 Telegram Bot Token 与 Chat ID：
+   ```bash
+   sudo nano /etc/vnstat-monitor.env
+   ```
+   `VPS_NAME`（显示名）、`TG_BOT_TOKEN`、`TG_CHAT_ID` 为必填；`LIMIT_GB`（流量上限，超过触发提醒）、`AUTO_SHUTDOWN`（超过上限是否关机）按需配置。
+2. 手动验证：`sudo vnstat-monitor`，应收到一条 Telegram 流量卡片。
+3. 设置定时（建议每 15 分钟）：
+   ```bash
+   sudo crontab -e
+   # 追加：
+   */15 * * * * /usr/local/bin/vnstat-monitor >/dev/null 2>&1
+   ```
+
+### xray-deploy — Xray 代理服务部署
+
+```bash
+sudo xray-deploy               # 交互菜单（推荐，所有操作都从这进）
+```
+
+常用子命令（等价的非交互形式）：
+
+```bash
+sudo xray-deploy install       # 首次部署向导：选回落域名 → 生成密钥 → 装 systemd/OpenRC 服务
+xray-deploy info               # 查看节点信息（明文 + mihomo/sing-box 客户端配置片段，无需 root）
+xray-deploy config show        # 查看服务端 config.json
+sudo xray-deploy config edit   # 编辑 config.json（保存后自动 xray -test 校验并重载）
+sudo xray-deploy update-geo    # 手动更新 geosite/geoip（脚本已配 /etc/cron.weekly/xray-geo-update 每周自动）
+sudo xray-deploy upgrade       # 升级 Xray 二进制（失败自动回滚）
+sudo xray-deploy protocol add/remove/edit/list   # 多协议管理（端口/SNI/UUID）
+sudo xray-deploy status / restart / uninstall
+```
+
+部署流程：
+1. `sudo xray-deploy` → 选 1 安装：按提示选端口（默认 443）、回落域名（自动测试+排序，可输自有域名）。
+2. `xray-deploy info` 查看生成结果，把 mihomo / sing-box 片段填入客户端。
+3. 节点信息持久化在 `/etc/xray-deploy/state.json`（600 权限，含私钥，**勿外泄**）。
+
+> 回落域名测试在 VPS 上实时进行（TLS1.3 + H2 + X25519 + 非跳转 + 非 Cloudflare）；若全部失败会干净退出，不会产生半成品。
 
 ## 安全约定
 
