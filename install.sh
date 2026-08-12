@@ -23,7 +23,7 @@
 set -euo pipefail
 
 # ============ 版本号（发布新功能时递增，供启动检查用） ============
-VPS_TOOLS_VERSION="1.1.0"
+VPS_TOOLS_VERSION="1.2.0"
 
 # ============ 配置 ============
 GH_USER="inybit"
