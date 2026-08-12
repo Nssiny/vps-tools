@@ -41,7 +41,7 @@
 
 set -euo pipefail
 
-VERSION="1.0.0"   # 发布新功能时递增（配合 vps-tools 工具约定：新增工具必须支持 -v/-h）
+VERSION="1.1.0"   # 发布新功能时递增（配合 vps-tools 工具约定：新增工具必须支持 -v/-h）
 
 # ============ 路径常量 ============
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -265,6 +265,10 @@ FALLBACK_CANDIDATES=(
   "www.bl.uk|GB|3|大英图书馆"
   "www.bnf.fr|FR|3|法国国家图书馆"
   "www.japan.travel|JP|3|日本旅游局"
+  "www.lovelive-anime.jp|JP|3|实测可用（2026-08-12）"
+  "www.waseda.jp|JP|3|早稻田大学（实测 2026-08-12）"
+  "www.gov.hk|HK|4|香港政府（实测 2026-08-12）"
+  "ntu.edu.sg|SG|3|新加坡南洋理工（实测 2026-08-12）"
   "www.visitbritain.com|GB|3|英国旅游局"
   "www.germany.travel|DE|3|德国旅游局"
   "www.france.fr|FR|3|法国官网"
@@ -340,17 +344,18 @@ select_fallback_domain() {
     return 0
   fi
 
-  # 2) 候选排序：同国 tier3 > 同国 tier4 > 他国 tier3 > 他国 tier4（tier5 大厂默认排除）
+  # 2) 候选过滤：只取服务器所在地（country）的域名（tier5 大厂排除）
+  # 2026-08-12 用户要求：候选表只取该地区的域名（不再混入他国备选）
   for line in "${FALLBACK_CANDIDATES[@]}"; do
     IFS='|' read -r dom c t note <<<"$line"
     [[ "$t" == "5" ]] && continue
-    if [[ "$c" == "$country" ]]; then
-      sorted+=("1|${t}|${dom}|${note}")
-    else
-      sorted+=("2|${t}|${dom}|${note}")
-    fi
+    [[ "$c" == "$country" ]] || continue
+    sorted+=("${t}|${dom}|${note}")
   done
-  IFS=$'\n' sorted=($(sort -t'|' -k1,1 -k2,2 <<<"${sorted[*]}")); unset IFS
+  if [[ ${#sorted[@]} -eq 0 ]]; then
+    die "候选表中无 ${country} 地区域名，请使用自有域名回落（或补充 FALLBACK_CANDIDATES）"
+  fi
+  IFS=$'\n' sorted=($(sort -t'|' -k1,1 <<<"${sorted[*]}")); unset IFS
 
   # 3) 逐个测试，通过即测握手延迟；最多收 6 个
   log_info "正在测试回落候选（TLS1.3+H2+X25519+非跳转+非Cloudflare）..."
@@ -548,7 +553,7 @@ protocol_to_inbound() {  # $1=协议参数 JSON → 输出 inbound JSON（数组
           network: "tcp", security: "reality",
           realitySettings: {
             show: false, dest: (.sni + ":443"), xver: 0,
-            serverNames: [.sni], privateKey: .private_key, shortIds: [.short_id]
+            serverNames: [.sni], privateKey: .private_key, shortIds: (.short_ids // [.short_id])
           }
         },
         sniffing: { enabled: true, destOverride: ["http", "tls", "quic"] }
@@ -645,7 +650,7 @@ proto_wizard_vless_reality() {  # $1=name → 输出 JSON 参数对象
       name: $name, type: "vless-reality",
       port: $port, uuid: $uuid,
       private_key: $priv, public_key: $pub,
-      sni: $sni, short_id: $sid
+      sni: $sni, short_id: $sid, short_ids: [$sid]
     }'
 }
 
