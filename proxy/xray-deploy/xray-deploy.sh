@@ -1078,14 +1078,14 @@ proto_edit() {
         certs="$(obtain_cert "$domain")" || die "证书获取失败"
         cert_file="${certs%% *}"; key_file="${certs##* }"
         state_set --arg n "$name" --arg domain "$domain" --arg cert_file "$cert_file" --arg key_file "$key_file" \
-          '.protocols = [.protocols[] | if .name==$n then .domain=$domain .cert_file=$cert_file .key_file=$key_file else . end]'
+          '.protocols = [.protocols[] | if .name==$n then (.domain=$domain | .cert_file=$cert_file | .key_file=$key_file) else . end]'
       elif [[ "$type" == "hysteria2" ]]; then
         local domain certs cert_file key_file
         read -r -p "新 SNI/域名: " domain
         certs="$(obtain_cert "${domain:-localhost}")" || die "证书获取失败"
         cert_file="${certs%% *}"; key_file="${certs##* }"
         state_set --arg n "$name" --arg domain "$domain" --arg cert_file "$cert_file" --arg key_file "$key_file" \
-          '.protocols = [.protocols[] | if .name==$n then .domain=$domain .cert_file=$cert_file .key_file=$key_file else . end]'
+          '.protocols = [.protocols[] | if .name==$n then (.domain=$domain | .cert_file=$cert_file | .key_file=$key_file) else . end]'
       else
         local sni
         sni="$(select_fallback_domain)" || die "回落域名选择失败"
@@ -1117,7 +1117,7 @@ proto_edit() {
         [[ -n "$brutal_up" && -n "$brutal_down" ]] || die "BRUTAL 需同时设置上行与下行带宽"
         log_warn "BRUTAL 启用：客户端（mihomo up/down、sing-box up_mbps/down_mbps）必须同步设置，否则连接失败"
         state_set --arg n "$name" --arg brutal_up "$brutal_up" --arg brutal_down "$brutal_down" \
-          '.protocols = [.protocols[] | if .name==$n then .brutal_up=$brutal_up .brutal_down=$brutal_down else . end]'
+          '.protocols = [.protocols[] | if .name==$n then (.brutal_up=$brutal_up | .brutal_down=$brutal_down) else . end]'
       else
         state_set --arg n "$name" \
           '.protocols = [.protocols[] | if .name==$n then del(.brutal_up, .brutal_down) else . end]'
