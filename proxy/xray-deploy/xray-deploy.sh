@@ -41,7 +41,7 @@
 
 set -euo pipefail
 
-VERSION="1.3.0"   # 发布新功能时递增（配合 vps-tools 工具约定：新增工具必须支持 -v/-h）
+VERSION="1.4.0"   # 发布新功能时递增（配合 vps-tools 工具约定：新增工具必须支持 -v/-h）
 
 # ============ 路径常量 ============
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -248,8 +248,32 @@ EOF
 }
 
 # ============ 端口检查 ============
-port_in_use() {  # $1=port
-  [[ -n "$(ss -ltn 2>/dev/null | awk '{print $4}' | grep -E ":${1}$" || true)" ]]
+# $1=port $2=proto（tcp|udp，默认 tcp）
+# TCP/UDP 端口独立：reality(TCP 443) 与 hy2(UDP 443) 可共存，互不冲突
+port_in_use() {
+  local port="$1" proto="${2:-tcp}" out
+  if [[ "$proto" == "udp" ]]; then
+    out="$(ss -uln 2>/dev/null | awk '{print $4}' | grep -E ":${port}$" || true)"
+  else
+    out="$(ss -ltn 2>/dev/null | awk '{print $4}' | grep -E ":${port}$" || true)"
+  fi
+  [[ -n "$out" ]]
+}
+
+# ufw 放行检查/添加：$1=port $2=proto（tcp|udp）
+# ufw 规则无协议后缀（如 "443"）时 TCP+UDP 均放行，无需重复添加
+ensure_firewall() {
+  local port="$1" proto="${2:-tcp}" rule
+  command -v ufw >/dev/null 2>&1 || return 0
+  ufw status 2>/dev/null | grep -qi "Status: active" || return 0
+  rule="$(ufw status 2>/dev/null | grep -E "^${port}(/|  )" || true)"
+  if [[ -n "$rule" ]]; then
+    # 已有规则（无协议后缀=双栈放行；或已含目标协议）
+    log_info "防火墙已放行 ${port}（${proto}）"
+  else
+    log_info "防火墙放行 ${port}/${proto} ..."
+    ufw allow "${port}/${proto}" >/dev/null 2>&1 || log_warn "ufw allow ${port}/${proto} 失败（可能已由其他规则覆盖）"
+  fi
 }
 
 # ============ 回落域名候选（半自动） ============
@@ -536,6 +560,7 @@ update_geo() {
 PROTO_REGISTRY=(
   "vless-reality|VLESS-TCP-XTLS-Vision-REALITY|xray"
   "vless-xhttp|VLESS-XHTTP-H2-TLS|xray"
+  "hysteria2|Hysteria2 (hy2)|xray"
 )
 
 proto_exists() {  # $1=name
@@ -634,12 +659,45 @@ gen_client_singbox_vless_xhttp() {  # $1=name $2=ip $3=port $4=uuid $5=pubkey(�
 EOF
 }
 
+gen_client_mihomo_hysteria2() {  # $1=name $2=ip $3=port $4=password $5=domain
+  cat <<EOF
+  - name: "xray-${1}"
+    type: hysteria2
+    server: ${2}
+    port: ${3}
+    password: ${4}
+    sni: ${5:-${2}}
+    skip-cert-verify: true
+    alpn:
+      - h3
+EOF
+}
+
+gen_client_singbox_hysteria2() {  # $1=name $2=ip $3=port $4=password $5=domain
+  cat <<EOF
+{
+  "type": "hysteria2",
+  "tag": "xray-${1}",
+  "server": "${2}",
+  "server_port": ${3},
+  "password": "${4}",
+  "tls": {
+    "enabled": true,
+    "server_name": "${5:-${2}}",
+    "insecure": true,
+    "alpn": ["h3"]
+  }
+}
+EOF
+}
+
 # 生成某协议的客户端片段（按类型分发）
 gen_client_mihomo() {  # $1=type 其余参数透传
   local type="$1"; shift
   case "$type" in
     vless-reality) gen_client_mihomo_vless_reality "$@" ;;
     vless-xhttp|vless-h2) gen_client_mihomo_vless_xhttp "$@" ;;
+    hysteria2) gen_client_mihomo_hysteria2 "$@" ;;
     *) die "未实现的客户端生成: ${type}" ;;
   esac
 }
@@ -649,6 +707,7 @@ gen_client_singbox() {  # $1=type 其余参数透传
   case "$type" in
     vless-reality) gen_client_singbox_vless_reality "$@" ;;
     vless-xhttp|vless-h2) gen_client_singbox_vless_xhttp "$@" ;;
+    hysteria2) gen_client_singbox_hysteria2 "$@" ;;
     *) die "未实现的客户端生成: ${type}" ;;
   esac
 }
@@ -689,6 +748,23 @@ protocol_to_inbound() {  # $1=协议参数 JSON → 输出 inbound JSON（数组
           xhttpSettings: { mode: "stream-up", path: .path, host: .domain }
         },
         sniffing: { enabled: true, destOverride: ["http", "tls", "quic"] }
+      }' <<<"$json"
+      ;;
+    hysteria2)
+      # Hysteria 2：QUIC/UDP，官方默认端口 443（模拟 HTTP/3 流量）
+      # Xray 协议名 hysteria + version 2；密码在 hysteriaSettings.auth
+      jq '{
+        tag: .name, listen: "0.0.0.0", port: .port, protocol: "hysteria",
+        settings: { version: 2 },
+        streamSettings: {
+          network: "hysteria", security: "tls",
+          tlsSettings: {
+            serverName: (.domain // ""), alpn: ["h3"],
+            certificates: [{ certificateFile: .cert_file, keyFile: .key_file }]
+          },
+          hysteriaSettings: ({ version: 2, auth: .password }
+            + (if .masquerade then { masquerade: { type: "proxy", url: .masquerade } } else {} end))
+        }
       }' <<<"$json"
       ;;
     *) die "未实现的 inbound 生成: ${type}" ;;
@@ -811,6 +887,56 @@ proto_wizard_vless_xhttp() {  # $1=name → 输出 JSON 参数对象
     }'
 }
 
+proto_wizard_hysteria2() {  # $1=name → 输出 JSON 参数对象
+  local name="$1" port domain password certs cert_file key_file masq yn conflict
+  # 端口冲突处理：hy2 走 UDP，TCP 同端口被占（如 reality 443）不冲突可共存；
+  # UDP 端口真被占（其他 hy2/服务）才提示卸载或取消
+  read -r -p "端口 [默认 443/UDP]（hy2 官方建议 443，模拟 HTTP/3；TCP 同端口被 REALITY 占用可共存）: " port
+  port="${port:-443}"
+  [[ "$port" =~ ^[0-9]+$ ]] && [[ "$port" -ge 1 ]] && [[ "$port" -le 65535 ]] || die "无效端口"
+  if port_in_use "$port" udp; then
+    conflict="$(jq -r --argjson p "$port" '.protocols[] | select(.port==$p) | .name' "$STATE_FILE" 2>/dev/null | head -1 || true)"
+    if [[ -n "$conflict" ]]; then
+      log_warn "端口 ${port}/UDP 已被协议 ${conflict} 占用"
+      read_input "是否卸载协议 ${conflict} 后继续？[y/N]: " yn
+      if [[ "${yn,,}" == "y" ]]; then
+        state_set --arg n "$conflict" '.protocols = [.protocols[] | select(.name != $n)]'
+        rebuild_and_reload
+        log_info "已卸载 ${conflict}"
+      else
+        die "端口 ${port} 冲突，安装取消（可换端口重试）"
+      fi
+    else
+      log_warn "端口 ${port}/UDP 被非 xray-deploy 服务占用"
+      read_input "是否继续？[y/N]: " yn
+      [[ "${yn,,}" == "y" ]] || die "安装取消"
+    fi
+  else
+    log_info "UDP ${port} 空闲（TCP 同端口占用不影响，TCP/UDP 独立）"
+  fi
+  ensure_firewall "$port" udp
+  read -r -p "SNI/域名（自签证书时客户端 insecure，可填域名或回车用 IP）: " domain
+  domain="${domain:-}"
+  read -r -p "密码 [回车自动生成]: " password
+  if [[ -z "$password" ]]; then
+    password="$(openssl rand -base64 18 | tr -d '=+/' | head -c 24)"
+  fi
+  certs="$(obtain_cert "${domain:-localhost}")" || die "证书获取失败"
+  cert_file="${certs%% *}"; key_file="${certs##* }"
+  read -r -p "masquerade 伪装 URL（可选，如 https://www.bing.com，回车跳过）: " masq
+  masq="${masq:-}"
+  jq -n --arg name "$name" --argjson port "$port" --arg password "$password" \
+    --arg domain "$domain" --arg cert_file "$cert_file" --arg key_file "$key_file" \
+    --arg masq "$masq" '
+    {
+      name: $name, type: "hysteria2",
+      port: $port, password: $password,
+      domain: $domain,
+      cert_file: $cert_file, key_file: $key_file
+    }
+    + (if ($masq != "") then { masquerade: $masq } else {} end)'
+}
+
 proto_add() {
   need_root
   [[ -f "$STATE_FILE" ]] || die "尚未安装，先运行: xray-deploy.sh install"
@@ -834,6 +960,7 @@ proto_add() {
   case "$type" in
     vless-reality) params="$(proto_wizard_vless_reality "$name")" || die "协议参数生成失败" ;;
     vless-xhttp|vless-h2) params="$(proto_wizard_vless_xhttp "$name")" || die "协议参数生成失败" ;;
+    hysteria2) params="$(proto_wizard_hysteria2 "$name")" || die "协议参数生成失败" ;;
     *) die "未实现的协议向导: ${type}" ;;
   esac
 
@@ -875,17 +1002,28 @@ proto_edit() {
   echo "  1) 端口"
   if [[ "$type" == "vless-xhttp" || "$type" == "vless-h2" ]]; then
     echo "  2) 域名（需同步更新证书/客户端）"
+  elif [[ "$type" == "hysteria2" ]]; then
+    echo "  2) SNI/域名（重签证书）"
   else
     echo "  2) 回落域名(SNI)"
   fi
-  echo "  3) 重新生成 UUID"
+  if [[ "$type" == "hysteria2" ]]; then
+    echo "  3) 重新生成密码"
+  else
+    echo "  3) 重新生成 UUID"
+  fi
   read -r -p "选择 [1-3]: " sel
   case "${sel:-1}" in
     1)
       local port
       read -r -p "新端口: " port
       [[ "$port" =~ ^[0-9]+$ ]] && [[ "$port" -ge 1 ]] && [[ "$port" -le 65535 ]] || die "无效端口"
-      port_in_use "$port" && die "端口 ${port} 已被占用"
+      if [[ "$type" == "hysteria2" ]]; then
+        port_in_use "$port" udp && die "端口 ${port}/UDP 已被占用"
+        ensure_firewall "$port" udp
+      else
+        port_in_use "$port" && die "端口 ${port} 已被占用"
+      fi
       state_set --arg n "$name" --argjson port "$port" \
         '.protocols = [.protocols[] | if .name==$n then .port=$port else . end]'
       ;;
@@ -898,6 +1036,13 @@ proto_edit() {
         cert_file="${certs%% *}"; key_file="${certs##* }"
         state_set --arg n "$name" --arg domain "$domain" --arg cert_file "$cert_file" --arg key_file "$key_file" \
           '.protocols = [.protocols[] | if .name==$n then .domain=$domain .cert_file=$cert_file .key_file=$key_file else . end]'
+      elif [[ "$type" == "hysteria2" ]]; then
+        local domain certs cert_file key_file
+        read -r -p "新 SNI/域名: " domain
+        certs="$(obtain_cert "${domain:-localhost}")" || die "证书获取失败"
+        cert_file="${certs%% *}"; key_file="${certs##* }"
+        state_set --arg n "$name" --arg domain "$domain" --arg cert_file "$cert_file" --arg key_file "$key_file" \
+          '.protocols = [.protocols[] | if .name==$n then .domain=$domain .cert_file=$cert_file .key_file=$key_file else . end]'
       else
         local sni
         sni="$(select_fallback_domain)" || die "回落域名选择失败"
@@ -906,10 +1051,17 @@ proto_edit() {
       fi
       ;;
     3)
-      local uuid
-      uuid="$(gen_uuid)"
-      state_set --arg n "$name" --arg uuid "$uuid" \
-        '.protocols = [.protocols[] | if .name==$n then .uuid=$uuid else . end]'
+      if [[ "$type" == "hysteria2" ]]; then
+        local password
+        password="$(openssl rand -base64 18 | tr -d '=+/' | head -c 24)"
+        state_set --arg n "$name" --arg password "$password" \
+          '.protocols = [.protocols[] | if .name==$n then .password=$password else . end]'
+      else
+        local uuid
+        uuid="$(gen_uuid)"
+        state_set --arg n "$name" --arg uuid "$uuid" \
+          '.protocols = [.protocols[] | if .name==$n then .uuid=$uuid else . end]'
+      fi
       ;;
     *) die "无效选择" ;;
   esac
@@ -919,7 +1071,7 @@ proto_edit() {
 
 proto_list_names() {
   log_info "现有协议:"
-  jq -r '.protocols[] | "  \(.name)  (\(.type))  端口 \(.port)  \(if (.type == "vless-xhttp" or .type == "vless-h2") then "域名 " + .domain else "SNI " + .sni end)"' "$STATE_FILE"
+  jq -r '.protocols[] | "  \(.name)  (\(.type))  端口 \(.port)\(if .type == "hysteria2" then "/UDP" else "" end)  \(if (.type == "vless-xhttp" or .type == "vless-h2") then "域名 " + .domain elif .type == "hysteria2" then "SNI " + (.domain // "-") else "SNI " + .sni end)"' "$STATE_FILE"
 }
 
 # 重建配置并重载服务（增删改后调用）
@@ -989,22 +1141,30 @@ cmd_info() {
   echo "=============================================="
   echo "服务器 IP: ${ip}"
   echo
-  local i name type port uuid pub sni sid domain path cert_file
+  local i name type port uuid pub sni sid domain path cert_file password
   for i in $(jq -r '.protocols | keys[]' "$STATE_FILE"); do
     name="$(jq -r ".protocols[$i].name" "$STATE_FILE")"
     type="$(jq -r ".protocols[$i].type" "$STATE_FILE")"
     port="$(jq -r ".protocols[$i].port" "$STATE_FILE")"
-    uuid="$(jq -r ".protocols[$i].uuid" "$STATE_FILE")"
+    uuid="$(jq -r ".protocols[$i].uuid // \"\"" "$STATE_FILE")"
     pub="$(jq -r ".protocols[$i].public_key // \"\"" "$STATE_FILE")"
     sni="$(jq -r ".protocols[$i].sni // \"\"" "$STATE_FILE")"
     sid="$(jq -r ".protocols[$i].short_id // \"\"" "$STATE_FILE")"
     domain="$(jq -r ".protocols[$i].domain // \"\"" "$STATE_FILE")"
     path="$(jq -r ".protocols[$i].path // \"\"" "$STATE_FILE")"
     cert_file="$(jq -r ".protocols[$i].cert_file // \"\"" "$STATE_FILE")"
+    password="$(jq -r ".protocols[$i].password // \"\"" "$STATE_FILE")"
     echo "----------------------------------------------"
     echo "协议: ${name}  (${type})"
     echo "地址: ${ip}:${port}"
-    echo "UUID: ${uuid}"
+    if [[ "$type" == "hysteria2" ]]; then
+      echo "传输: UDP/QUIC (Hysteria2)"
+      echo "密码: ${password}"
+      [[ -n "$domain" ]] && echo "SNI: ${domain}"
+      echo "证书: ${cert_file}"
+    else
+      echo "UUID: ${uuid}"
+    fi
     if [[ "$type" == "vless-reality" ]]; then
       echo "SNI: ${sni}"
     elif [[ "$type" == "vless-xhttp" || "$type" == "vless-h2" ]]; then
@@ -1013,10 +1173,18 @@ cmd_info() {
     fi
     echo
     echo "--- mihomo (Clash Meta) proxies 片段 ---"
-    gen_client_mihomo "$type" "$name" "$ip" "$port" "$uuid" "$pub" "$sni" "$sid" "$domain" "$path"
+    if [[ "$type" == "hysteria2" ]]; then
+      gen_client_mihomo_hysteria2 "$name" "$ip" "$port" "$password" "$domain"
+    else
+      gen_client_mihomo "$type" "$name" "$ip" "$port" "$uuid" "$pub" "$sni" "$sid" "$domain" "$path"
+    fi
     echo
     echo "--- sing-box outbounds 片段 ---"
-    gen_client_singbox "$type" "$name" "$ip" "$port" "$uuid" "$pub" "$sni" "$sid" "$domain" "$path"
+    if [[ "$type" == "hysteria2" ]]; then
+      gen_client_singbox_hysteria2 "$name" "$ip" "$port" "$password" "$domain"
+    else
+      gen_client_singbox "$type" "$name" "$ip" "$port" "$uuid" "$pub" "$sni" "$sid" "$domain" "$path"
+    fi
     echo
   done
   echo "----------------------------------------------"
@@ -1143,7 +1311,7 @@ xray-deploy ${VERSION} — Xray 一键部署/管理（vps-tools 生态）
   sudo xray-deploy update-geo      更新 geosite/geoip（或自行配 systemd timer）
   sudo xray-deploy upgrade         升级 Xray 二进制（失败自动回滚）
   sudo xray-deploy status|restart|uninstall
-  sudo xray-deploy protocol add|remove|edit|list   多协议管理（vless-reality / vless-xhttp）
+  sudo xray-deploy protocol add|remove|edit|list   多协议管理（vless-reality / vless-xhttp / hysteria2）
   xray-deploy -v, --version        显示版本号
   xray-deploy -h, --help           显示本帮助
 
@@ -1152,6 +1320,8 @@ xray-deploy ${VERSION} — Xray 一键部署/管理（vps-tools 生态）
   vless-xhttp    VLESS-XHTTP-H2-TLS（真实证书落地，域名需解析到本机；证书可已有路径/acme.sh 自动签发/自签）
                  Xray 26.x 起 h2 transport 迁移至 XHTTP stream-up（HTTP/2）；mihomo 需 v1.19.23+，sing-box 需 extended/lx fork
                  （旧名 vless-h2 兼容，1.3.0 起统一为 vless-xhttp）
+  hysteria2      Hysteria2 (hy2)（QUIC/UDP，官方默认端口 443 模拟 HTTP/3；自签证书+客户端 insecure，无需 CF token）
+                 TCP/UDP 端口独立：与 REALITY 的 TCP 443 可共存；UDP 端口被占时向导会提示是否卸载冲突协议
 EOF
       exit 0 ;;
   install)       cmd_install ;;
