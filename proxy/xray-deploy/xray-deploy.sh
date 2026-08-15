@@ -8,7 +8,7 @@
 #   - 自动识别架构（amd64 / arm64 / armv7l）
 #   - 自动写入自启（systemd / OpenRC）
 #   - 节点信息持久化，随时 info 查看
-#   - 协议可扩展（注册表驱动），默认 VLESS-TCP-XTLS-Vision-REALITY
+#   - 协议可扩展（注册表驱动），默认 VLESS-TCP-XTLS-Vision-REALITY，可选 VLESS-H2-TLS（真实证书落地）
 #   - geosite/geoip 使用 MetaCubeX/meta-rules-dat，每周自动更新
 #   - 回落域名半自动筛选（测试 + 排序 + 确认）
 #   - 生成 mihomo / sing-box 客户端节点信息
@@ -41,7 +41,7 @@
 
 set -euo pipefail
 
-VERSION="1.1.0"   # 发布新功能时递增（配合 vps-tools 工具约定：新增工具必须支持 -v/-h）
+VERSION="1.2.0"   # 发布新功能时递增（配合 vps-tools 工具约定：新增工具必须支持 -v/-h）
 
 # ============ 路径常量 ============
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -407,6 +407,77 @@ gen_reality_keys() {  # 输出 "private_key public_key"
     END{print p, q}'
 }
 
+# ============ TLS 证书（h2 等标准 TLS 协议用） ============
+CERT_DIR="${CONFIG_DIR}/certs"
+
+# 输出 "cert_file key_file"；$1=域名
+# 三种来源：已有证书路径 / acme.sh 自动签发（HTTP-01，需 80 空闲）/ 自签（测试用）
+obtain_cert() {
+  local domain="$1" mode cert_file key_file
+  log_info "TLS 证书来源（${domain}）:"
+  log_info "  1) 已有证书文件路径"
+  log_info "  2) acme.sh 自动签发 Let's Encrypt（HTTP-01 验证，需 80 端口空闲）"
+  log_info "  3) 自签证书（测试用，客户端需 skip-cert-verify）"
+  read_input "选择 [1-3，默认 1]: " mode
+  mode="${mode:-1}"
+  case "$mode" in
+    1)
+      read_input "证书文件 fullchain.pem 路径: " cert_file
+      read_input "私钥 privkey.pem 路径: " key_file
+      [[ -n "$cert_file" ]] && [[ -f "$cert_file" ]] || die "证书文件不存在: ${cert_file}"
+      [[ -n "$key_file" ]] && [[ -f "$key_file" ]] || die "私钥文件不存在: ${key_file}"
+      echo "$cert_file $key_file"
+      ;;
+    2)
+      obtain_cert_acme "$domain"
+      ;;
+    3)
+      obtain_cert_selfsigned "$domain"
+      ;;
+    *) die "无效选择" ;;
+  esac
+}
+
+obtain_cert_selfsigned() {  # $1=domain；输出 "cert_file key_file"（存 CERT_DIR/<domain>/）
+  local domain="$1" dir="${CERT_DIR}/${domain}"
+  mkdir -p "$dir"
+  log_info "生成自签证书: ${domain}（有效期 365 天）"
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+    -keyout "${dir}/privkey.pem" -out "${dir}/fullchain.pem" -days 365 \
+    -subj "/CN=${domain}" -addext "subjectAltName=DNS:${domain}" >/dev/null 2>&1 \
+    || openssl req -x509 -newkey rsa:2048 -nodes \
+      -keyout "${dir}/privkey.pem" -out "${dir}/fullchain.pem" -days 365 \
+      -subj "/CN=${domain}" -addext "subjectAltName=DNS:${domain}" >/dev/null 2>&1 \
+    || die "自签证书生成失败"
+  echo "${dir}/fullchain.pem ${dir}/privkey.pem"
+}
+
+obtain_cert_acme() {  # $1=domain；输出 "cert_file key_file"
+  local domain="$1" dir="${CERT_DIR}/${domain}" acme_cmd
+  mkdir -p "$dir"
+  if ! command -v acme.sh >/dev/null 2>&1 && [[ ! -x /root/.acme.sh/acme.sh ]]; then
+    log_info "安装 acme.sh ..."
+    curl -fsSL --max-time 60 https://get.acme.sh | sh -s -- --no-profile >/dev/null 2>&1 \
+      || die "acme.sh 安装失败（手动安装: curl https://get.acme.sh | sh）"
+  fi
+  acme_cmd="acme.sh"; command -v acme.sh >/dev/null 2>&1 || acme_cmd="/root/.acme.sh/acme.sh"
+  # 先尝试 standalone（HTTP-01，80 端口）；失败回退自签并提示（不阻断部署）
+  if port_in_use 80; then
+    log_warn "80 端口被占用，无法 HTTP-01 验证——将改用自签证书（客户端需 skip-cert-verify）"
+    obtain_cert_selfsigned "$domain"
+    return 0
+  fi
+  log_info "签发 Let's Encrypt 证书（HTTP-01）: ${domain}"
+  if "$acme_cmd" --issue --standalone -d "$domain" --httpport 80 --server letsencrypt >/dev/null 2>&1 \
+     && "$acme_cmd" --install-cert -d "$domain" \
+        --fullchain-file "${dir}/fullchain.pem" --key-file "${dir}/privkey.pem" >/dev/null 2>&1; then
+    echo "${dir}/fullchain.pem ${dir}/privkey.pem"
+  else
+    log_warn "Let's Encrypt 签发失败（域名未解析到本机？80 不可达？）——改用自签证书（客户端需 skip-cert-verify）"
+    obtain_cert_selfsigned "$domain"
+  fi
+}
+
 # ============ Xray 下载/安装 ============
 latest_xray_tag() {
   curl -fsSL --max-time 20 "${GITHUB_API}" | jq -r '.tag_name'
@@ -464,6 +535,7 @@ update_geo() {
 #   3. 在 state.json 的 protocols[] 里存该协议参数
 PROTO_REGISTRY=(
   "vless-reality|VLESS-TCP-XTLS-Vision-REALITY|xray"
+  "vless-h2|VLESS-H2-TLS|xray"
 )
 
 proto_exists() {  # $1=name
@@ -521,11 +593,51 @@ gen_client_singbox_vless_reality() {  # 同 mihomo 参数顺序
 EOF
 }
 
+gen_client_mihomo_vless_h2() {  # $1=name $2=ip $3=port $4=uuid $5=pubkey(忽略) $6=sni(忽略) $7=shortid(忽略) $8=domain $9=path
+  cat <<EOF
+  - name: "xray-${1}"
+    type: vless
+    server: ${2}
+    port: ${3}
+    uuid: ${4}
+    network: h2
+    udp: true
+    tls: true
+    servername: ${8}
+    h2-opts:
+      host:
+        - ${8}
+      path: ${9}
+EOF
+}
+
+gen_client_singbox_vless_h2() {  # $1=name $2=ip $3=port $4=uuid $5=pubkey(忽略) $6=sni(忽略) $7=shortid(忽略) $8=domain $9=path
+  cat <<EOF
+{
+  "type": "vless",
+  "tag": "xray-${1}",
+  "server": "${2}",
+  "server_port": ${3},
+  "uuid": "${4}",
+  "tls": {
+    "enabled": true,
+    "server_name": "${8}"
+  },
+  "transport": {
+    "type": "http",
+    "host": "${8}",
+    "path": "${9}"
+  }
+}
+EOF
+}
+
 # 生成某协议的客户端片段（按类型分发）
 gen_client_mihomo() {  # $1=type 其余参数透传
   local type="$1"; shift
   case "$type" in
     vless-reality) gen_client_mihomo_vless_reality "$@" ;;
+    vless-h2)      gen_client_mihomo_vless_h2 "$@" ;;
     *) die "未实现的客户端生成: ${type}" ;;
   esac
 }
@@ -534,6 +646,7 @@ gen_client_singbox() {  # $1=type 其余参数透传
   local type="$1"; shift
   case "$type" in
     vless-reality) gen_client_singbox_vless_reality "$@" ;;
+    vless-h2)      gen_client_singbox_vless_h2 "$@" ;;
     *) die "未实现的客户端生成: ${type}" ;;
   esac
 }
@@ -555,6 +668,22 @@ protocol_to_inbound() {  # $1=协议参数 JSON → 输出 inbound JSON（数组
             show: false, dest: (.sni + ":443"), xver: 0,
             serverNames: [.sni], privateKey: .private_key, shortIds: (.short_ids // [.short_id])
           }
+        },
+        sniffing: { enabled: true, destOverride: ["http", "tls", "quic"] }
+      }' <<<"$json"
+      ;;
+    vless-h2)
+      # VLESS + HTTP/2 (h2) + TLS：真实证书落地（域名需解析到本机）
+      jq '{
+        tag: .name, listen: "0.0.0.0", port: .port, protocol: "vless",
+        settings: { clients: [{ id: .uuid }], decryption: "none" },
+        streamSettings: {
+          network: "h2", security: "tls",
+          tlsSettings: {
+            serverName: .domain,
+            certificates: [{ certificateFile: .cert_file, keyFile: .key_file }]
+          },
+          httpSettings: { path: .path, host: [.domain] }
         },
         sniffing: { enabled: true, destOverride: ["http", "tls", "quic"] }
       }' <<<"$json"
@@ -654,6 +783,31 @@ proto_wizard_vless_reality() {  # $1=name → 输出 JSON 参数对象
     }'
 }
 
+proto_wizard_vless_h2() {  # $1=name → 输出 JSON 参数对象
+  local name="$1" port domain path uuid certs cert_file key_file
+  read -r -p "端口 [默认 8443]（443 被 REALITY 占用时用独立端口）: " port
+  port="${port:-8443}"
+  [[ "$port" =~ ^[0-9]+$ ]] && [[ "$port" -ge 1 ]] && [[ "$port" -le 65535 ]] || die "无效端口"
+  port_in_use "$port" && die "端口 ${port} 已被占用"
+  read -r -p "域名（必须已解析到本机）: " domain
+  [[ -n "$domain" ]] || die "域名不能为空"
+  read -r -p "HTTP/2 path [默认 /xray]: " path
+  path="${path:-/xray}"
+  [[ "$path" == /* ]] || die "path 必须以 / 开头"
+  certs="$(obtain_cert "$domain")" || die "证书获取失败"
+  cert_file="${certs%% *}"; key_file="${certs##* }"
+  uuid="$(gen_uuid)"
+  jq -n --arg name "$name" --argjson port "$port" --arg uuid "$uuid" \
+    --arg domain "$domain" --arg path "$path" \
+    --arg cert_file "$cert_file" --arg key_file "$key_file" '
+    {
+      name: $name, type: "vless-h2",
+      port: $port, uuid: $uuid,
+      domain: $domain, path: $path,
+      cert_file: $cert_file, key_file: $key_file
+    }'
+}
+
 proto_add() {
   need_root
   [[ -f "$STATE_FILE" ]] || die "尚未安装，先运行: xray-deploy.sh install"
@@ -676,6 +830,7 @@ proto_add() {
   local params
   case "$type" in
     vless-reality) params="$(proto_wizard_vless_reality "$name")" || die "协议参数生成失败" ;;
+    vless-h2)      params="$(proto_wizard_vless_h2 "$name")" || die "协议参数生成失败" ;;
     *) die "未实现的协议向导: ${type}" ;;
   esac
 
@@ -715,7 +870,11 @@ proto_edit() {
   type="$(jq -r --arg n "$name" '.protocols[] | select(.name==$n) | .type' "$STATE_FILE")"
   echo "修改 ${name}（${type}）:"
   echo "  1) 端口"
-  echo "  2) 回落域名(SNI)"
+  if [[ "$type" == "vless-h2" ]]; then
+    echo "  2) 域名（需同步更新证书/客户端）"
+  else
+    echo "  2) 回落域名(SNI)"
+  fi
   echo "  3) 重新生成 UUID"
   read -r -p "选择 [1-3]: " sel
   case "${sel:-1}" in
@@ -728,10 +887,20 @@ proto_edit() {
         '.protocols = [.protocols[] | if .name==$n then .port=$port else . end]'
       ;;
     2)
-      local sni
-      sni="$(select_fallback_domain)" || die "回落域名选择失败"
-      state_set --arg n "$name" --arg sni "$sni" \
-        '.protocols = [.protocols[] | if .name==$n then .sni=$sni else . end]'
+      if [[ "$type" == "vless-h2" ]]; then
+        local domain certs cert_file key_file
+        read -r -p "新域名: " domain
+        [[ -n "$domain" ]] || die "域名不能为空"
+        certs="$(obtain_cert "$domain")" || die "证书获取失败"
+        cert_file="${certs%% *}"; key_file="${certs##* }"
+        state_set --arg n "$name" --arg domain "$domain" --arg cert_file "$cert_file" --arg key_file "$key_file" \
+          '.protocols = [.protocols[] | if .name==$n then .domain=$domain .cert_file=$cert_file .key_file=$key_file else . end]'
+      else
+        local sni
+        sni="$(select_fallback_domain)" || die "回落域名选择失败"
+        state_set --arg n "$name" --arg sni "$sni" \
+          '.protocols = [.protocols[] | if .name==$n then .sni=$sni else . end]'
+      fi
       ;;
     3)
       local uuid
@@ -747,7 +916,7 @@ proto_edit() {
 
 proto_list_names() {
   log_info "现有协议:"
-  jq -r '.protocols[] | "  \(.name)  (\(.type))  端口 \(.port)  SNI \(.sni)"' "$STATE_FILE"
+  jq -r '.protocols[] | "  \(.name)  (\(.type))  端口 \(.port)  \(if .type == "vless-h2" then "域名 " + .domain else "SNI " + .sni end)"' "$STATE_FILE"
 }
 
 # 重建配置并重载服务（增删改后调用）
@@ -817,25 +986,34 @@ cmd_info() {
   echo "=============================================="
   echo "服务器 IP: ${ip}"
   echo
-  local i name type port uuid pub sni sid
+  local i name type port uuid pub sni sid domain path cert_file
   for i in $(jq -r '.protocols | keys[]' "$STATE_FILE"); do
     name="$(jq -r ".protocols[$i].name" "$STATE_FILE")"
     type="$(jq -r ".protocols[$i].type" "$STATE_FILE")"
     port="$(jq -r ".protocols[$i].port" "$STATE_FILE")"
     uuid="$(jq -r ".protocols[$i].uuid" "$STATE_FILE")"
-    pub="$(jq -r ".protocols[$i].public_key" "$STATE_FILE")"
-    sni="$(jq -r ".protocols[$i].sni" "$STATE_FILE")"
-    sid="$(jq -r ".protocols[$i].short_id" "$STATE_FILE")"
+    pub="$(jq -r ".protocols[$i].public_key // \"\"" "$STATE_FILE")"
+    sni="$(jq -r ".protocols[$i].sni // \"\"" "$STATE_FILE")"
+    sid="$(jq -r ".protocols[$i].short_id // \"\"" "$STATE_FILE")"
+    domain="$(jq -r ".protocols[$i].domain // \"\"" "$STATE_FILE")"
+    path="$(jq -r ".protocols[$i].path // \"\"" "$STATE_FILE")"
+    cert_file="$(jq -r ".protocols[$i].cert_file // \"\"" "$STATE_FILE")"
     echo "----------------------------------------------"
     echo "协议: ${name}  (${type})"
-    echo "地址: ${ip}:${port}  SNI: ${sni}"
+    echo "地址: ${ip}:${port}"
     echo "UUID: ${uuid}"
+    if [[ "$type" == "vless-reality" ]]; then
+      echo "SNI: ${sni}"
+    elif [[ "$type" == "vless-h2" ]]; then
+      echo "域名: ${domain}  path: ${path}"
+      echo "证书: ${cert_file}"
+    fi
     echo
     echo "--- mihomo (Clash Meta) proxies 片段 ---"
-    gen_client_mihomo "$type" "$name" "$ip" "$port" "$uuid" "$pub" "$sni" "$sid"
+    gen_client_mihomo "$type" "$name" "$ip" "$port" "$uuid" "$pub" "$sni" "$sid" "$domain" "$path"
     echo
     echo "--- sing-box outbounds 片段 ---"
-    gen_client_singbox "$type" "$name" "$ip" "$port" "$uuid" "$pub" "$sni" "$sid"
+    gen_client_singbox "$type" "$name" "$ip" "$port" "$uuid" "$pub" "$sni" "$sid" "$domain" "$path"
     echo
   done
   echo "----------------------------------------------"
@@ -962,9 +1140,13 @@ xray-deploy ${VERSION} — Xray 一键部署/管理（vps-tools 生态）
   sudo xray-deploy update-geo      更新 geosite/geoip（或自行配 systemd timer）
   sudo xray-deploy upgrade         升级 Xray 二进制（失败自动回滚）
   sudo xray-deploy status|restart|uninstall
-  sudo xray-deploy protocol add|remove|edit|list   多协议管理
+  sudo xray-deploy protocol add|remove|edit|list   多协议管理（vless-reality / vless-h2）
   xray-deploy -v, --version        显示版本号
   xray-deploy -h, --help           显示本帮助
+
+协议说明:
+  vless-reality  VLESS-TCP-XTLS-Vision-REALITY（默认，无需证书，回落伪装）
+  vless-h2       VLESS-H2-TLS（真实证书落地，域名需解析到本机；证书可已有路径/acme.sh 自动签发/自签）
 EOF
       exit 0 ;;
   install)       cmd_install ;;
