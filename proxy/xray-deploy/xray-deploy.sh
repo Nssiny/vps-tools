@@ -752,17 +752,20 @@ protocol_to_inbound() {  # $1=协议参数 JSON → 输出 inbound JSON（数组
       ;;
     hysteria2)
       # Hysteria 2：QUIC/UDP，官方默认端口 443（模拟 HTTP/3 流量）
-      # Xray 协议名 hysteria + version 2；密码在 hysteriaSettings.auth
+      # Xray 协议名 hysteria + version 2
+      # 坑（2026-08-16 真机实测）：inbound auth 必须在 settings.clients[].auth，
+      # hysteriaSettings.auth 仅 outbound 有效（写那里 xray -test 通过但握手失败）
+      # Xray 26.x 客户端已移除 allowInsecure → 自签证书需 pinnedPeerCertSha256（mihomo/sing-box 仍用 skip-cert-verify/insecure）
       jq '{
         tag: .name, listen: "0.0.0.0", port: .port, protocol: "hysteria",
-        settings: { version: 2 },
+        settings: { version: 2, clients: [{ auth: .password }] },
         streamSettings: {
           network: "hysteria", security: "tls",
           tlsSettings: {
             serverName: (.domain // ""), alpn: ["h3"],
             certificates: [{ certificateFile: .cert_file, keyFile: .key_file }]
           },
-          hysteriaSettings: ({ version: 2, auth: .password }
+          hysteriaSettings: ({ version: 2 }
             + (if .masquerade then { masquerade: { type: "proxy", url: .masquerade } } else {} end))
         }
       }' <<<"$json"
