@@ -41,7 +41,7 @@
 
 set -euo pipefail
 
-VERSION="1.4.1"   # 发布新功能时递增（配合 vps-tools 工具约定：新增工具必须支持 -v/-h）
+VERSION="1.5.0"   # 发布新功能时递增（配合 vps-tools 工具约定：新增工具必须支持 -v/-h）
 
 # ============ 路径常量 ============
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -659,7 +659,7 @@ gen_client_singbox_vless_xhttp() {  # $1=name $2=ip $3=port $4=uuid $5=pubkey(�
 EOF
 }
 
-gen_client_mihomo_hysteria2() {  # $1=name $2=ip $3=port $4=password $5=domain
+gen_client_mihomo_hysteria2() {  # $1=name $2=ip $3=port $4=password $5=domain $6=brutal_up $7=brutal_down
   cat <<EOF
   - name: "xray-${1}"
     type: hysteria2
@@ -671,9 +671,19 @@ gen_client_mihomo_hysteria2() {  # $1=name $2=ip $3=port $4=password $5=domain
     alpn:
       - h3
 EOF
+  if [[ -n "${6:-}" && -n "${7:-}" ]]; then
+    cat <<EOF
+    up: ${6}
+    down: ${7}
+EOF
+  fi
 }
 
-gen_client_singbox_hysteria2() {  # $1=name $2=ip $3=port $4=password $5=domain
+gen_client_singbox_hysteria2() {  # $1=name $2=ip $3=port $4=password $5=domain $6=brutal_up $7=brutal_down
+  # BRUTAL 带宽字符串（如 "100 mbps"）→ sing-box 需数字（up_mbps/down_mbps）
+  local up_num down_num
+  up_num="$(echo "${6:-}" | grep -oE '^[0-9]+' || true)"
+  down_num="$(echo "${7:-}" | grep -oE '^[0-9]+' || true)"
   cat <<EOF
 {
   "type": "hysteria2",
@@ -687,6 +697,14 @@ gen_client_singbox_hysteria2() {  # $1=name $2=ip $3=port $4=password $5=domain
     "insecure": true,
     "alpn": ["h3"]
   }
+EOF
+  if [[ -n "$up_num" && -n "$down_num" ]]; then
+    cat <<EOF
+  ,"up_mbps": ${up_num},
+  "down_mbps": ${down_num}
+EOF
+  fi
+  cat <<EOF
 }
 EOF
 }
@@ -756,18 +774,29 @@ protocol_to_inbound() {  # $1=协议参数 JSON → 输出 inbound JSON（数组
       # 坑（2026-08-16 真机实测）：inbound auth 必须在 settings.clients[].auth，
       # hysteriaSettings.auth 仅 outbound 有效（写那里 xray -test 通过但握手失败）
       # Xray 26.x 客户端已移除 allowInsecure → 自签证书需 pinnedPeerCertSha256（mihomo/sing-box 仍用 skip-cert-verify/insecure）
+      # BRUTAL 拥塞控制（可选）：finalmask.quicParams.congestion=force-brutal + brutalUp/Down；
+      # 服务端启用后客户端必须配套设置带宽（mihomo up/down、sing-box up_mbps/down_mbps），否则连接失败
       jq '{
         tag: .name, listen: "0.0.0.0", port: .port, protocol: "hysteria",
         settings: { version: 2, clients: [{ auth: .password }] },
-        streamSettings: {
-          network: "hysteria", security: "tls",
-          tlsSettings: {
-            serverName: (.domain // ""), alpn: ["h3"],
-            certificates: [{ certificateFile: .cert_file, keyFile: .key_file }]
-          },
-          hysteriaSettings: ({ version: 2 }
-            + (if .masquerade then { masquerade: { type: "proxy", url: .masquerade } } else {} end))
-        }
+        streamSettings: (
+          {
+            network: "hysteria", security: "tls",
+            tlsSettings: {
+              serverName: (.domain // ""), alpn: ["h3"],
+              certificates: [{ certificateFile: .cert_file, keyFile: .key_file }]
+            },
+            hysteriaSettings: ({ version: 2 }
+              + (if .masquerade then { masquerade: { type: "proxy", url: .masquerade } } else {} end))
+          }
+          + (if (.brutal_up != null and .brutal_down != null) then
+              { finalmask: { quicParams: {
+                  congestion: "force-brutal",
+                  brutalUp: .brutal_up,
+                  brutalDown: .brutal_down
+                } } }
+            else {} end)
+        )
       }' <<<"$json"
       ;;
     *) die "未实现的 inbound 生成: ${type}" ;;
@@ -891,7 +920,7 @@ proto_wizard_vless_xhttp() {  # $1=name → 输出 JSON 参数对象
 }
 
 proto_wizard_hysteria2() {  # $1=name → 输出 JSON 参数对象
-  local name="$1" port domain password certs cert_file key_file masq yn conflict
+  local name="$1" port domain password certs cert_file key_file masq yn conflict brutal_up brutal_down
   # 端口冲突处理：hy2 走 UDP，TCP 同端口被占（如 reality 443）不冲突可共存；
   # UDP 端口真被占（其他 hy2/服务）才提示卸载或取消
   read -r -p "端口 [默认 443/UDP]（hy2 官方建议 443，模拟 HTTP/3；TCP 同端口被 REALITY 占用可共存）: " port
@@ -928,16 +957,26 @@ proto_wizard_hysteria2() {  # $1=name → 输出 JSON 参数对象
   cert_file="${certs%% *}"; key_file="${certs##* }"
   read -r -p "masquerade 伪装 URL（可选，如 https://www.bing.com，回车跳过）: " masq
   masq="${masq:-}"
+  # BRUTAL 拥塞控制：服务端 + 客户端必须配套设置 up/down（客户端不设会连接失败）
+  read -r -p "BRUTAL 上行带宽（如 100 mbps，回车不启用）: " brutal_up
+  brutal_up="${brutal_up:-}"
+  read -r -p "BRUTAL 下行带宽（如 100 mbps，回车不启用）: " brutal_down
+  brutal_down="${brutal_down:-}"
+  if [[ -n "$brutal_up" || -n "$brutal_down" ]]; then
+    [[ -n "$brutal_up" && -n "$brutal_down" ]] || die "BRUTAL 需同时设置上行与下行带宽"
+    log_warn "BRUTAL 启用：客户端（mihomo up/down、sing-box up_mbps/down_mbps）必须同步设置，否则连接失败"
+  fi
   jq -n --arg name "$name" --argjson port "$port" --arg password "$password" \
     --arg domain "$domain" --arg cert_file "$cert_file" --arg key_file "$key_file" \
-    --arg masq "$masq" '
+    --arg masq "$masq" --arg brutal_up "$brutal_up" --arg brutal_down "$brutal_down" '
     {
       name: $name, type: "hysteria2",
       port: $port, password: $password,
       domain: $domain,
       cert_file: $cert_file, key_file: $key_file
     }
-    + (if ($masq != "") then { masquerade: $masq } else {} end)'
+    + (if ($masq != "") then { masquerade: $masq } else {} end)
+    + (if ($brutal_up != "" and $brutal_down != "") then { brutal_up: $brutal_up, brutal_down: $brutal_down } else {} end)'
 }
 
 proto_add() {
@@ -1012,10 +1051,11 @@ proto_edit() {
   fi
   if [[ "$type" == "hysteria2" ]]; then
     echo "  3) 重新生成密码"
+    echo "  4) BRUTAL 带宽（回车清空禁用）"
   else
     echo "  3) 重新生成 UUID"
   fi
-  read -r -p "选择 [1-3]: " sel
+  read -r -p "选择 [1-4]: " sel
   case "${sel:-1}" in
     1)
       local port
@@ -1064,6 +1104,24 @@ proto_edit() {
         uuid="$(gen_uuid)"
         state_set --arg n "$name" --arg uuid "$uuid" \
           '.protocols = [.protocols[] | if .name==$n then .uuid=$uuid else . end]'
+      fi
+      ;;
+    4)
+      [[ "$type" == "hysteria2" ]] || die "无效选择"
+      local brutal_up brutal_down
+      read -r -p "BRUTAL 上行带宽（如 100 mbps，回车禁用 BRUTAL）: " brutal_up
+      brutal_up="${brutal_up:-}"
+      read -r -p "BRUTAL 下行带宽（如 100 mbps，回车禁用 BRUTAL）: " brutal_down
+      brutal_down="${brutal_down:-}"
+      if [[ -n "$brutal_up" || -n "$brutal_down" ]]; then
+        [[ -n "$brutal_up" && -n "$brutal_down" ]] || die "BRUTAL 需同时设置上行与下行带宽"
+        log_warn "BRUTAL 启用：客户端（mihomo up/down、sing-box up_mbps/down_mbps）必须同步设置，否则连接失败"
+        state_set --arg n "$name" --arg brutal_up "$brutal_up" --arg brutal_down "$brutal_down" \
+          '.protocols = [.protocols[] | if .name==$n then .brutal_up=$brutal_up .brutal_down=$brutal_down else . end]'
+      else
+        state_set --arg n "$name" \
+          '.protocols = [.protocols[] | if .name==$n then del(.brutal_up, .brutal_down) else . end]'
+        log_info "BRUTAL 已禁用（客户端需移除 up/down 或 up_mbps/down_mbps）"
       fi
       ;;
     *) die "无效选择" ;;
@@ -1144,7 +1202,7 @@ cmd_info() {
   echo "=============================================="
   echo "服务器 IP: ${ip}"
   echo
-  local i name type port uuid pub sni sid domain path cert_file password
+  local i name type port uuid pub sni sid domain path cert_file password brutal_up brutal_down
   for i in $(jq -r '.protocols | keys[]' "$STATE_FILE"); do
     name="$(jq -r ".protocols[$i].name" "$STATE_FILE")"
     type="$(jq -r ".protocols[$i].type" "$STATE_FILE")"
@@ -1157,6 +1215,8 @@ cmd_info() {
     path="$(jq -r ".protocols[$i].path // \"\"" "$STATE_FILE")"
     cert_file="$(jq -r ".protocols[$i].cert_file // \"\"" "$STATE_FILE")"
     password="$(jq -r ".protocols[$i].password // \"\"" "$STATE_FILE")"
+    brutal_up="$(jq -r ".protocols[$i].brutal_up // \"\"" "$STATE_FILE")"
+    brutal_down="$(jq -r ".protocols[$i].brutal_down // \"\"" "$STATE_FILE")"
     echo "----------------------------------------------"
     echo "协议: ${name}  (${type})"
     echo "地址: ${ip}:${port}"
@@ -1165,6 +1225,7 @@ cmd_info() {
       echo "密码: ${password}"
       [[ -n "$domain" ]] && echo "SNI: ${domain}"
       echo "证书: ${cert_file}"
+      [[ -n "$brutal_up" && -n "$brutal_down" ]] && echo "BRUTAL: up=${brutal_up} down=${brutal_down}"
     else
       echo "UUID: ${uuid}"
     fi
@@ -1177,14 +1238,14 @@ cmd_info() {
     echo
     echo "--- mihomo (Clash Meta) proxies 片段 ---"
     if [[ "$type" == "hysteria2" ]]; then
-      gen_client_mihomo_hysteria2 "$name" "$ip" "$port" "$password" "$domain"
+      gen_client_mihomo_hysteria2 "$name" "$ip" "$port" "$password" "$domain" "$brutal_up" "$brutal_down"
     else
       gen_client_mihomo "$type" "$name" "$ip" "$port" "$uuid" "$pub" "$sni" "$sid" "$domain" "$path"
     fi
     echo
     echo "--- sing-box outbounds 片段 ---"
     if [[ "$type" == "hysteria2" ]]; then
-      gen_client_singbox_hysteria2 "$name" "$ip" "$port" "$password" "$domain"
+      gen_client_singbox_hysteria2 "$name" "$ip" "$port" "$password" "$domain" "$brutal_up" "$brutal_down"
     else
       gen_client_singbox "$type" "$name" "$ip" "$port" "$uuid" "$pub" "$sni" "$sid" "$domain" "$path"
     fi
