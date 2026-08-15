@@ -600,19 +600,20 @@ gen_client_mihomo_vless_h2() {  # $1=name $2=ip $3=port $4=uuid $5=pubkey(忽略
     server: ${2}
     port: ${3}
     uuid: ${4}
-    network: h2
+    network: xhttp
     udp: true
     tls: true
     servername: ${8}
-    h2-opts:
-      host:
-        - ${8}
+    xhttp-opts:
       path: ${9}
+      mode: stream-up
 EOF
 }
 
 gen_client_singbox_vless_h2() {  # $1=name $2=ip $3=port $4=uuid $5=pubkey(忽略) $6=sni(忽略) $7=shortid(忽略) $8=domain $9=path
+  # 注意：sing-box 上游不支持 XHTTP（Xray 26.x h2 迁移后的形态），需 sing-box-extended/lx fork
   cat <<EOF
+# sing-box 上游不支持 XHTTP（stream-up），请使用 sing-box-extended 或 sing-box-lx：
 {
   "type": "vless",
   "tag": "xray-${1}",
@@ -624,9 +625,10 @@ gen_client_singbox_vless_h2() {  # $1=name $2=ip $3=port $4=uuid $5=pubkey(忽�
     "server_name": "${8}"
   },
   "transport": {
-    "type": "http",
+    "type": "xhttp",
     "host": "${8}",
-    "path": "${9}"
+    "path": "${9}",
+    "mode": "stream-up"
   }
 }
 EOF
@@ -674,16 +676,17 @@ protocol_to_inbound() {  # $1=协议参数 JSON → 输出 inbound JSON（数组
       ;;
     vless-h2)
       # VLESS + HTTP/2 (h2) + TLS：真实证书落地（域名需解析到本机）
+      # Xray 26.x 起 h2 transport 已迁移至 XHTTP（method=xhttp），stream-up 模式即 HTTP/2 传输
       jq '{
         tag: .name, listen: "0.0.0.0", port: .port, protocol: "vless",
         settings: { clients: [{ id: .uuid }], decryption: "none" },
         streamSettings: {
-          network: "h2", security: "tls",
+          method: "xhttp", security: "tls",
           tlsSettings: {
             serverName: .domain,
             certificates: [{ certificateFile: .cert_file, keyFile: .key_file }]
           },
-          httpSettings: { path: .path, host: [.domain] }
+          xhttpSettings: { mode: "stream-up", path: .path, host: .domain }
         },
         sniffing: { enabled: true, destOverride: ["http", "tls", "quic"] }
       }' <<<"$json"
@@ -1146,7 +1149,8 @@ xray-deploy ${VERSION} — Xray 一键部署/管理（vps-tools 生态）
 
 协议说明:
   vless-reality  VLESS-TCP-XTLS-Vision-REALITY（默认，无需证书，回落伪装）
-  vless-h2       VLESS-H2-TLS（真实证书落地，域名需解析到本机；证书可已有路径/acme.sh 自动签发/自签）
+  vless-h2       VLESS-XHTTP-H2-TLS（真实证书落地，域名需解析到本机；证书可已有路径/acme.sh 自动签发/自签）
+                 Xray 26.x 起 h2 transport 迁移至 XHTTP stream-up（HTTP/2）；mihomo 需 v1.19.23+，sing-box 需 extended/lx fork
 EOF
       exit 0 ;;
   install)       cmd_install ;;
