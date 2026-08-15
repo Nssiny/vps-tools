@@ -41,7 +41,7 @@
 
 set -euo pipefail
 
-VERSION="1.5.1"   # 发布新功能时递增（配合 vps-tools 工具约定：新增工具必须支持 -v/-h）
+VERSION="1.5.2"   # 发布新功能时递增（配合 vps-tools 工具约定：新增工具必须支持 -v/-h）
 
 # ============ 路径常量 ============
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -1029,11 +1029,8 @@ proto_remove() {
   [[ -f "$STATE_FILE" ]] || die "尚未安装"
   local name
   proto_list_names
-  read -r -p "输入要删除的协议名称: " name
-  [[ -n "$name" ]] || die "名称不能为空"
-  local count
-  count="$(jq --arg n "$name" '[.protocols[] | select(.name==$n)] | length' "$STATE_FILE")"
-  [[ "$count" -eq 1 ]] || die "协议 ${name} 不存在"
+  read -r -p "输入要删除的协议名称或序号: " name
+  name="$(resolve_proto_name "$name")" || return 1
   read -r -p "确认删除协议 ${name}？[y/N]: " yn
   [[ "${yn,,}" == "y" ]] || { log_info "已取消"; return 0; }
   state_set --arg n "$name" '.protocols = [.protocols[] | select(.name != $n)]'
@@ -1046,8 +1043,8 @@ proto_edit() {
   [[ -f "$STATE_FILE" ]] || die "尚未安装"
   local name
   proto_list_names
-  read -r -p "输入要修改的协议名称: " name
-  [[ -n "$name" ]] || die "名称不能为空"
+  read -r -p "输入要修改的协议名称或序号: " name
+  name="$(resolve_proto_name "$name")" || return 1
   local idx type
   idx="$(jq --arg n "$name" '[.protocols[] | select(.name==$n)] | length' "$STATE_FILE")"
   [[ "$idx" -eq 1 ]] || die "协议 ${name} 不存在"
@@ -1064,10 +1061,11 @@ proto_edit() {
   if [[ "$type" == "hysteria2" ]]; then
     echo "  3) 重新生成密码"
     echo "  4) BRUTAL 带宽（回车清空禁用）"
+    echo "  5) masquerade 伪装 URL（回车清空禁用）"
   else
     echo "  3) 重新生成 UUID"
   fi
-  read -r -p "选择 [1-4]: " sel
+  read -r -p "选择 [1-5]: " sel
   case "${sel:-1}" in
     1)
       local port
@@ -1136,6 +1134,21 @@ proto_edit() {
         log_info "BRUTAL 已禁用（客户端需移除 up/down 或 up_mbps/down_mbps）"
       fi
       ;;
+    5)
+      [[ "$type" == "hysteria2" ]] || die "无效选择"
+      local masq
+      read -r -p "masquerade 伪装 URL（如 https://www.bing.com，回车清空禁用）: " masq
+      masq="${masq:-}"
+      if [[ -n "$masq" ]]; then
+        state_set --arg n "$name" --arg masq "$masq" \
+          '.protocols = [.protocols[] | if .name==$n then .masquerade=$masq else . end]'
+        log_info "masquerade 已设置: ${masq}"
+      else
+        state_set --arg n "$name" \
+          '.protocols = [.protocols[] | if .name==$n then del(.masquerade) else . end]'
+        log_info "masquerade 已清空"
+      fi
+      ;;
     *) die "无效选择" ;;
   esac
   rebuild_and_reload
@@ -1144,7 +1157,23 @@ proto_edit() {
 
 proto_list_names() {
   log_info "现有协议:"
-  jq -r '.protocols[] | "  \(.name)  (\(.type))  端口 \(.port)\(if .type == "hysteria2" then "/UDP" else "" end)  \(if (.type == "vless-xhttp" or .type == "vless-h2") then "域名 " + .domain elif .type == "hysteria2" then "SNI " + (.domain // "-") else "SNI " + .sni end)"' "$STATE_FILE"
+  jq -r '.protocols | to_entries[] | "  [\(.key+1)] \(.value.name)  (\(.value.type))  端口 \(.value.port)\(if .value.type == "hysteria2" then "/UDP" else "" end)  \(if (.value.type == "vless-xhttp" or .value.type == "vless-h2") then "域名 " + .value.domain elif .value.type == "hysteria2" then "SNI " + (.value.domain // "-") else "SNI " + .value.sni end)"' "$STATE_FILE"
+}
+
+# 解析协议选择：支持序号（[1]）或名称；输出协议 name；找不到 die
+resolve_proto_name() {  # $1=输入
+  local input="$1" name
+  if [[ "$input" =~ ^[0-9]+$ ]]; then
+    name="$(jq -r --argjson i "$((input-1))" '.protocols[$i].name // ""' "$STATE_FILE")"
+    [[ -n "$name" ]] || die "序号 ${input} 无效"
+    echo "$name"
+  else
+    [[ -n "$input" ]] || die "名称不能为空"
+    local count
+    count="$(jq --arg n "$input" '[.protocols[] | select(.name==$n)] | length' "$STATE_FILE")"
+    [[ "$count" -eq 1 ]] || die "协议 ${input} 不存在"
+    echo "$input"
+  fi
 }
 
 # 重建配置并重载服务（增删改后调用）
