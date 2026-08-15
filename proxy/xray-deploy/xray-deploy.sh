@@ -8,7 +8,7 @@
 #   - 自动识别架构（amd64 / arm64 / armv7l）
 #   - 自动写入自启（systemd / OpenRC）
 #   - 节点信息持久化，随时 info 查看
-#   - 协议可扩展（注册表驱动），默认 VLESS-TCP-XTLS-Vision-REALITY，可选 VLESS-H2-TLS（真实证书落地）
+#   - 协议可扩展（注册表驱动），默认 VLESS-TCP-XTLS-Vision-REALITY，可选 VLESS-XHTTP-H2-TLS（真实证书落地）
 #   - geosite/geoip 使用 MetaCubeX/meta-rules-dat，每周自动更新
 #   - 回落域名半自动筛选（测试 + 排序 + 确认）
 #   - 生成 mihomo / sing-box 客户端节点信息
@@ -41,7 +41,7 @@
 
 set -euo pipefail
 
-VERSION="1.2.0"   # 发布新功能时递增（配合 vps-tools 工具约定：新增工具必须支持 -v/-h）
+VERSION="1.3.0"   # 发布新功能时递增（配合 vps-tools 工具约定：新增工具必须支持 -v/-h）
 
 # ============ 路径常量 ============
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -535,7 +535,7 @@ update_geo() {
 #   3. 在 state.json 的 protocols[] 里存该协议参数
 PROTO_REGISTRY=(
   "vless-reality|VLESS-TCP-XTLS-Vision-REALITY|xray"
-  "vless-h2|VLESS-H2-TLS|xray"
+  "vless-xhttp|VLESS-XHTTP-H2-TLS|xray"
 )
 
 proto_exists() {  # $1=name
@@ -593,7 +593,7 @@ gen_client_singbox_vless_reality() {  # 同 mihomo 参数顺序
 EOF
 }
 
-gen_client_mihomo_vless_h2() {  # $1=name $2=ip $3=port $4=uuid $5=pubkey(忽略) $6=sni(忽略) $7=shortid(忽略) $8=domain $9=path
+gen_client_mihomo_vless_xhttp() {  # $1=name $2=ip $3=port $4=uuid $5=pubkey(忽略) $6=sni(忽略) $7=shortid(忽略) $8=domain $9=path
   cat <<EOF
   - name: "xray-${1}"
     type: vless
@@ -610,7 +610,7 @@ gen_client_mihomo_vless_h2() {  # $1=name $2=ip $3=port $4=uuid $5=pubkey(忽略
 EOF
 }
 
-gen_client_singbox_vless_h2() {  # $1=name $2=ip $3=port $4=uuid $5=pubkey(忽略) $6=sni(忽略) $7=shortid(忽略) $8=domain $9=path
+gen_client_singbox_vless_xhttp() {  # $1=name $2=ip $3=port $4=uuid $5=pubkey(忽略) $6=sni(忽略) $7=shortid(忽略) $8=domain $9=path
   # 注意：sing-box 上游不支持 XHTTP（Xray 26.x h2 迁移后的形态），需 sing-box-extended/lx fork
   cat <<EOF
 # sing-box 上游不支持 XHTTP（stream-up），请使用 sing-box-extended 或 sing-box-lx：
@@ -639,7 +639,7 @@ gen_client_mihomo() {  # $1=type 其余参数透传
   local type="$1"; shift
   case "$type" in
     vless-reality) gen_client_mihomo_vless_reality "$@" ;;
-    vless-h2)      gen_client_mihomo_vless_h2 "$@" ;;
+    vless-xhttp|vless-h2) gen_client_mihomo_vless_xhttp "$@" ;;
     *) die "未实现的客户端生成: ${type}" ;;
   esac
 }
@@ -648,7 +648,7 @@ gen_client_singbox() {  # $1=type 其余参数透传
   local type="$1"; shift
   case "$type" in
     vless-reality) gen_client_singbox_vless_reality "$@" ;;
-    vless-h2)      gen_client_singbox_vless_h2 "$@" ;;
+    vless-xhttp|vless-h2) gen_client_singbox_vless_xhttp "$@" ;;
     *) die "未实现的客户端生成: ${type}" ;;
   esac
 }
@@ -674,7 +674,7 @@ protocol_to_inbound() {  # $1=协议参数 JSON → 输出 inbound JSON（数组
         sniffing: { enabled: true, destOverride: ["http", "tls", "quic"] }
       }' <<<"$json"
       ;;
-    vless-h2)
+    vless-xhttp|vless-h2)
       # VLESS + HTTP/2 (h2) + TLS：真实证书落地（域名需解析到本机）
       # Xray 26.x 起 h2 transport 已迁移至 XHTTP（method=xhttp），stream-up 模式即 HTTP/2 传输
       jq '{
@@ -786,7 +786,7 @@ proto_wizard_vless_reality() {  # $1=name → 输出 JSON 参数对象
     }'
 }
 
-proto_wizard_vless_h2() {  # $1=name → 输出 JSON 参数对象
+proto_wizard_vless_xhttp() {  # $1=name → 输出 JSON 参数对象
   local name="$1" port domain path uuid certs cert_file key_file
   read -r -p "端口 [默认 8443]（443 被 REALITY 占用时用独立端口）: " port
   port="${port:-8443}"
@@ -804,7 +804,7 @@ proto_wizard_vless_h2() {  # $1=name → 输出 JSON 参数对象
     --arg domain "$domain" --arg path "$path" \
     --arg cert_file "$cert_file" --arg key_file "$key_file" '
     {
-      name: $name, type: "vless-h2",
+      name: $name, type: "vless-xhttp",
       port: $port, uuid: $uuid,
       domain: $domain, path: $path,
       cert_file: $cert_file, key_file: $key_file
@@ -833,7 +833,7 @@ proto_add() {
   local params
   case "$type" in
     vless-reality) params="$(proto_wizard_vless_reality "$name")" || die "协议参数生成失败" ;;
-    vless-h2)      params="$(proto_wizard_vless_h2 "$name")" || die "协议参数生成失败" ;;
+    vless-xhttp|vless-h2) params="$(proto_wizard_vless_xhttp "$name")" || die "协议参数生成失败" ;;
     *) die "未实现的协议向导: ${type}" ;;
   esac
 
@@ -873,7 +873,7 @@ proto_edit() {
   type="$(jq -r --arg n "$name" '.protocols[] | select(.name==$n) | .type' "$STATE_FILE")"
   echo "修改 ${name}（${type}）:"
   echo "  1) 端口"
-  if [[ "$type" == "vless-h2" ]]; then
+  if [[ "$type" == "vless-xhttp" || "$type" == "vless-h2" ]]; then
     echo "  2) 域名（需同步更新证书/客户端）"
   else
     echo "  2) 回落域名(SNI)"
@@ -890,7 +890,7 @@ proto_edit() {
         '.protocols = [.protocols[] | if .name==$n then .port=$port else . end]'
       ;;
     2)
-      if [[ "$type" == "vless-h2" ]]; then
+      if [[ "$type" == "vless-xhttp" || "$type" == "vless-h2" ]]; then
         local domain certs cert_file key_file
         read -r -p "新域名: " domain
         [[ -n "$domain" ]] || die "域名不能为空"
@@ -919,7 +919,7 @@ proto_edit() {
 
 proto_list_names() {
   log_info "现有协议:"
-  jq -r '.protocols[] | "  \(.name)  (\(.type))  端口 \(.port)  \(if .type == "vless-h2" then "域名 " + .domain else "SNI " + .sni end)"' "$STATE_FILE"
+  jq -r '.protocols[] | "  \(.name)  (\(.type))  端口 \(.port)  \(if (.type == "vless-xhttp" or .type == "vless-h2") then "域名 " + .domain else "SNI " + .sni end)"' "$STATE_FILE"
 }
 
 # 重建配置并重载服务（增删改后调用）
@@ -1007,7 +1007,7 @@ cmd_info() {
     echo "UUID: ${uuid}"
     if [[ "$type" == "vless-reality" ]]; then
       echo "SNI: ${sni}"
-    elif [[ "$type" == "vless-h2" ]]; then
+    elif [[ "$type" == "vless-xhttp" || "$type" == "vless-h2" ]]; then
       echo "域名: ${domain}  path: ${path}"
       echo "证书: ${cert_file}"
     fi
@@ -1143,14 +1143,15 @@ xray-deploy ${VERSION} — Xray 一键部署/管理（vps-tools 生态）
   sudo xray-deploy update-geo      更新 geosite/geoip（或自行配 systemd timer）
   sudo xray-deploy upgrade         升级 Xray 二进制（失败自动回滚）
   sudo xray-deploy status|restart|uninstall
-  sudo xray-deploy protocol add|remove|edit|list   多协议管理（vless-reality / vless-h2）
+  sudo xray-deploy protocol add|remove|edit|list   多协议管理（vless-reality / vless-xhttp）
   xray-deploy -v, --version        显示版本号
   xray-deploy -h, --help           显示本帮助
 
 协议说明:
   vless-reality  VLESS-TCP-XTLS-Vision-REALITY（默认，无需证书，回落伪装）
-  vless-h2       VLESS-XHTTP-H2-TLS（真实证书落地，域名需解析到本机；证书可已有路径/acme.sh 自动签发/自签）
+  vless-xhttp    VLESS-XHTTP-H2-TLS（真实证书落地，域名需解析到本机；证书可已有路径/acme.sh 自动签发/自签）
                  Xray 26.x 起 h2 transport 迁移至 XHTTP stream-up（HTTP/2）；mihomo 需 v1.19.23+，sing-box 需 extended/lx fork
+                 （旧名 vless-h2 兼容，1.3.0 起统一为 vless-xhttp）
 EOF
       exit 0 ;;
   install)       cmd_install ;;
