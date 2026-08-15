@@ -41,7 +41,7 @@
 
 set -euo pipefail
 
-VERSION="1.5.0"   # 发布新功能时递增（配合 vps-tools 工具约定：新增工具必须支持 -v/-h）
+VERSION="1.5.1"   # 发布新功能时递增（配合 vps-tools 工具约定：新增工具必须支持 -v/-h）
 
 # ============ 路径常量 ============
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -429,6 +429,18 @@ gen_reality_keys() {  # 输出 "private_key public_key"
     /Password \(PublicKey\):/{q=$3}
     /Public key:/{q=$3}
     END{print p, q}'
+}
+
+# BRUTAL 带宽归一化：纯数字自动补 mbps 单位（xray 无单位时按 B/s 解析，60 → 60B/s < 64KB/s 校验失败）
+# 例：60 → "60 mbps"；"60 mbps"/"100Mbps" → 原样保留（交给 xray 校验）
+normalize_bandwidth() {
+  local v="$1"
+  [[ -z "$v" ]] && { echo ""; return; }
+  if [[ "$v" =~ ^[0-9]+$ ]]; then
+    echo "$v mbps"
+  else
+    echo "$v"
+  fi
 }
 
 # ============ TLS 证书（h2 等标准 TLS 协议用） ============
@@ -959,9 +971,9 @@ proto_wizard_hysteria2() {  # $1=name → 输出 JSON 参数对象
   masq="${masq:-}"
   # BRUTAL 拥塞控制：服务端 + 客户端必须配套设置 up/down（客户端不设会连接失败）
   read -r -p "BRUTAL 上行带宽（如 100 mbps，回车不启用）: " brutal_up
-  brutal_up="${brutal_up:-}"
+  brutal_up="$(normalize_bandwidth "${brutal_up:-}")"
   read -r -p "BRUTAL 下行带宽（如 100 mbps，回车不启用）: " brutal_down
-  brutal_down="${brutal_down:-}"
+  brutal_down="$(normalize_bandwidth "${brutal_down:-}")"
   if [[ -n "$brutal_up" || -n "$brutal_down" ]]; then
     [[ -n "$brutal_up" && -n "$brutal_down" ]] || die "BRUTAL 需同时设置上行与下行带宽"
     log_warn "BRUTAL 启用：客户端（mihomo up/down、sing-box up_mbps/down_mbps）必须同步设置，否则连接失败"
@@ -1110,9 +1122,9 @@ proto_edit() {
       [[ "$type" == "hysteria2" ]] || die "无效选择"
       local brutal_up brutal_down
       read -r -p "BRUTAL 上行带宽（如 100 mbps，回车禁用 BRUTAL）: " brutal_up
-      brutal_up="${brutal_up:-}"
+      brutal_up="$(normalize_bandwidth "${brutal_up:-}")"
       read -r -p "BRUTAL 下行带宽（如 100 mbps，回车禁用 BRUTAL）: " brutal_down
-      brutal_down="${brutal_down:-}"
+      brutal_down="$(normalize_bandwidth "${brutal_down:-}")"
       if [[ -n "$brutal_up" || -n "$brutal_down" ]]; then
         [[ -n "$brutal_up" && -n "$brutal_down" ]] || die "BRUTAL 需同时设置上行与下行带宽"
         log_warn "BRUTAL 启用：客户端（mihomo up/down、sing-box up_mbps/down_mbps）必须同步设置，否则连接失败"
