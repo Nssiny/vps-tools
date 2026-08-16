@@ -41,7 +41,7 @@
 
 set -euo pipefail
 
-VERSION="1.5.4"   # 发布新功能时递增（配合 vps-tools 工具约定：新增工具必须支持 -v/-h）
+VERSION="1.5.5"   # 发布新功能时递增（配合 vps-tools 工具约定：新增工具必须支持 -v/-h）
 
 # ============ 路径常量 ============
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -1105,9 +1105,10 @@ proto_add() {
   [[ -f "$STATE_FILE" ]] || die "尚未安装，先运行: xray-deploy.sh install"
   local name type
   echo "可选协议类型:"
-  local i=1 line
+  local i=1 line disp
   for line in "${PROTO_REGISTRY[@]}"; do
-    echo "  $i) ${line#*|}"
+    IFS='|' read -r _ disp _ <<<"$line"
+    echo "  $i) $disp"
     i=$((i+1))
   done
   read -r -p "选择协议类型 [1-$((i-1))]: " t
@@ -1305,11 +1306,27 @@ cmd_install() {
   state_init
   state_set --arg ip "$(detect_server_ip)" '.server_ip = $ip'
 
-  # 默认协议：VLESS-TCP-XTLS-Vision-REALITY
-  log_info "默认部署协议: VLESS-TCP-XTLS-Vision-REALITY"
-  local name="vless-reality-01"
+  # 选择部署协议（回车默认 1 = VLESS-TCP-XTLS-Vision-REALITY）
+  echo "可选部署协议:"
+  local i=1 line disp
+  for line in "${PROTO_REGISTRY[@]}"; do
+    IFS='|' read -r _ disp _ <<<"$line"
+    echo "  $i) $disp"
+    i=$((i+1))
+  done
+  read -r -p "选择部署协议 [1-$((i-1))，回车默认 1（VLESS-TCP-XTLS-Vision-REALITY）]: " t
+  t="${t:-1}"
+  [[ "$t" =~ ^[0-9]+$ ]] && [[ "$t" -ge 1 ]] && [[ "$t" -le "$((i-1))" ]] || die "无效选择"
+  local type="${PROTO_REGISTRY[$((t-1))]%%|*}"
+
+  local name="${type}-01"
   local params
-  params="$(proto_wizard_vless_reality "$name")" || die "协议参数生成失败"
+  case "$type" in
+    vless-reality) params="$(proto_wizard_vless_reality "$name")" || die "协议参数生成失败" ;;
+    vless-xhttp)   params="$(proto_wizard_vless_xhttp "$name")" || die "协议参数生成失败" ;;
+    hysteria2)     params="$(proto_wizard_hysteria2 "$name")" || die "协议参数生成失败" ;;
+    *) die "未知协议类型: $type" ;;
+  esac
   state_set --argjson p "$params" '.protocols = [$p]'
 
   install_service_file
@@ -1518,7 +1535,7 @@ xray-deploy ${VERSION} — Xray 一键部署/管理（vps-tools 生态）
 
 用法:
   xray-deploy                      交互式管理菜单
-  sudo xray-deploy install         首次部署向导（回落检测 → 密钥 → 服务）
+  sudo xray-deploy install         首次部署向导（选协议 → 参数 → 服务；默认 VLESS-TCP-XTLS-Vision-REALITY）
   xray-deploy info                 查看节点信息（明文 + 客户端配置片段）
   xray-deploy config show|edit     查看/编辑服务端配置（edit 后自动 -test 校验并重载）
   xray-deploy fallback-test [域名] 测试回落域名握手延迟并排序（无参=全部候选）
