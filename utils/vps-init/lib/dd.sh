@@ -15,6 +15,10 @@
 
 # 支持 --ci（cloud image）的发行版（reinstall.sh 源码 5033 行确认；debian/ubuntu 最稳）
 CI_SUPPORTED_DISTROS="debian ubuntu kali rocky almalinux oracle anolis opencloudos openeuler fedora opensuse centos"
+# 云镜像自带 cloud-init 的发行版（reinstall --cloud-data 的 user-data 只有 cloud-init 会消费）
+# 实锤：Debian nocloud 镜像不带 cloud-init（2026-08-16 真机）→ --cloud-data 无效，需手动续跑
+# Ubuntu cloud image 强制带 cloud-init；其他发行版按"可能不带"保守提示
+CLOUDINIT_BUILTIN_DISTROS="ubuntu"
 
 # 生成 sha-512 密码哈希（python3 → mkpasswd → openssl passwd -6）
 hash_password() {  # $1=明文密码 → stdout 哈希
@@ -162,13 +166,19 @@ dd_main() {
   local pass_hash=""
   pass_hash="$(hash_password "$pass")" || { log_err "无法生成密码哈希（需 python3/mkpasswd/openssl）"; return 1; }
 
-  # ---------- cloud-init 支持检测 ----------
-  local ci_supported=0
+  # ---------- cloud-init 支持检测（镜像层面 vs user-data 消费方，2026-08-16 拆分） ----------
+  local ci_supported=0 cloudinit_reliable=0
   if [[ " $CI_SUPPORTED_DISTROS " == *" $distro "* ]]; then
     ci_supported=1
   fi
+  if [[ " $CLOUDINIT_BUILTIN_DISTROS " == *" $distro "* ]]; then
+    cloudinit_reliable=1
+  fi
   if [[ "$ci_supported" -eq 0 ]]; then
-    log_warn "发行版 ${distro} 不支持 --ci（cloud-init），降级为：注入密钥+端口，重启后手动 vps-init"
+    log_warn "发行版 ${distro} 不支持 --ci（cloud image），降级为：注入密钥+端口，重启后手动 vps-init"
+  elif [[ "$cloudinit_reliable" -eq 0 ]]; then
+    log_warn "⚠️ ${distro} 的云镜像通常不含 cloud-init（Debian nocloud 实锤）——--cloud-data 的自动续跑大概率不生效"
+    log_warn "  reinstall 仍会配好 SSH 密钥/端口/禁密码；BBR/UFW/Fail2Ban/普通用户需重启后运行 vps-init 补全"
   fi
 
   # ---------- 双重确认 ----------
@@ -177,7 +187,7 @@ dd_main() {
   log_warn "  发行版: ${distro} ${version}"
   log_warn "  SSH 端口: ${ssh_port}"
   log_warn "  普通用户: ${user}"
-  log_warn "  全自动续跑: $([[ $ci_supported -eq 1 ]] && echo '是（cloud-init）' || echo '否（降级半自动）')"
+  log_warn "  全自动续跑: $([[ $cloudinit_reliable -eq 1 ]] && echo '是（cloud-init）' || { [[ $ci_supported -eq 1 ]] && echo '⚠️ 镜像可能不含 cloud-init（重启后可能需手动 vps-init）' || echo '否（降级半自动）'; })"
   log_warn "================================================================"
   local ans=""
   read_input "输入 YES 确认执行: " ans || { log_warn "已取消"; return 1; }
