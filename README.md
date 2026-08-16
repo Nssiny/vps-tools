@@ -83,11 +83,20 @@ vps-tools/
 ├── proxy/              # 代理类（xray/sing-box 等辅助脚本）
 │   └── xray-deploy/
 │       └── xray-deploy.sh
-├── utils/              # 通用工具（DDNS/证书等）
+├── utils/              # 通用工具（DDNS/证书/初始化等）
+│   └── vps-init/
+│       ├── vps-init.sh              # 一键初始化 VPS（入口）
+│       ├── lib/                     # 模块拆分（common/dd/system/user/ssh/ufw/fail2ban）
+│       ├── templates/               # sshd drop-in / fail2ban jail.local 模板
+│       └── vps-init.env.example
+├── bench/              # 测试类（测速/基准）
+│   └── vps-bench/
+│       └── vps-bench.sh
 └── backup/             # 备份类
 ```
 
 新增脚本：按功能域放入对应目录 + 在 `install.sh` 的 `TOOLS` 注册表加一行（格式见文件头注释）。
+多文件工具（如 vps-init 的 lib/、templates/）在注册表第 6 字段 `extra_files` 列出全部附加文件。
 
 ## 工具清单
 
@@ -95,6 +104,8 @@ vps-tools/
 |---|---|---|---|
 | [vnstat-monitor](monitor/vnstat-monitor/) | monitor | vnStat + Telegram 流量监控：进度条/偏移校准/熔断关机/无限流量模式；原地更新消息防刷屏（2026-08-08 修复孤儿卡片：错误分类+原子写状态） | vnstat, jq, curl, gawk, iproute2 |
 | [xray-deploy](proxy/xray-deploy/) | proxy | Xray 一键部署：交互菜单/子命令双模式；协议注册表可扩展（VLESS-TCP-XTLS-Vision-REALITY 默认 / VLESS-XHTTP-H2-TLS / Hysteria2 hy2）；回落域名半自动筛选；MetaCubeX geosite/geoip 每周自动更新；生成 mihomo/sing-box 客户端节点；服务端 routing 防国内访问 | curl, unzip, jq, openssl |
+| [vps-init](utils/vps-init/) | utils | 一键初始化 VPS：DD 重装（全自动续跑）/ 时区 / BBR / 普通用户+sudo / SSH 密钥+随机高位端口+禁密码 / Fail2Ban / UFW；模块化 lib/ + 模板渲染 | curl, openssh-server |
+| [vps-bench](bench/vps-bench/) | bench | 节点测速：NodeQuality / TcpQuality 二选一（第三方脚本封装，执行前明示来源） | curl |
 
 ## 工具使用教程
 
@@ -151,6 +162,47 @@ sudo xray-deploy status / restart / uninstall
 3. 节点信息持久化在 `/etc/xray-deploy/state.json`（600 权限，含私钥，**勿外泄**）。
 
 > 回落域名测试在 VPS 上实时进行（TLS1.3 + H2 + X25519 + 非跳转 + 非 Cloudflare）；若全部失败会干净退出，不会产生半成品。
+
+### vps-init — 一键初始化 VPS
+
+```bash
+sudo vps-init               # 交互向导：system → user → ssh → ufw → fail2ban（每步确认，已完成自动跳过）
+sudo vps-init dd            # 一键 DD 重装（全自动续跑，cloud-init 首启自动初始化）
+vps-init status             # 查看已执行步骤 / SSH 端口 / 时区 / BBR / UFW
+```
+
+常用单步子命令（幂等，可单独执行）：
+
+```bash
+sudo vps-init system        # 时区 Asia/Shanghai + BBR
+sudo vps-init user          # 创建普通用户 + sudo（VPS_INIT_SKIP_USER=1 跳过 = root-only）
+sudo vps-init ssh           # SSH 密钥注入 + 随机高位端口 + 禁用密码登录
+sudo vps-init ufw           # UFW：deny incoming，放行 SSH 端口 + 额外端口
+sudo vps-init fail2ban      # Fail2Ban：backend/banaction 自动探测，端口注入
+```
+
+一键 DD（全自动续跑）：
+
+```bash
+sudo vps-init dd                        # 交互输入发行版/版本/端口/用户/密码/公钥
+sudo vps-init dd --distro debian --version 13 --port 52322 --user admin --pubkey /path/id_ed25519.pub
+```
+
+- DD 原理：调用 [bin456789/reinstall](https://github.com/bin456789/reinstall)，`--ci + --cloud-data` 把自包含初始化脚本（时区/BBR/用户/SSH/UFW/Fail2Ban）打包进 cloud-init，**新系统首启自动完成全部初始化**；公钥经 `--ssh-key` 注入，重启后直接密钥登录
+- 密码以 sha-512 哈希注入（不落明文）；双重确认（输入 `YES`）才执行
+- 限制：alpine/arch/gentoo 等不支持 cloud-init 的发行版自动降级为"注入密钥+端口，重启后手动 vps-init"
+- 配置：`/etc/vps-init.env`（可缺省）——`VPS_INIT_USER/SSH_PUBKEY/SSH_PORT`、`SSH_PORT_MIN/MAX`（随机端口范围）、`VPS_INIT_EXTRA_PORTS`（UFW 额外端口）、`VPS_INIT_SKIP_USER`、`VPS_INIT_DISABLE_ROOT`、`VPS_INIT_YES`
+- 防失联：禁密码登录前置校验 authorized_keys 非空；所有 sshd 变更先 `sshd -t`；改端口后保持当前会话、开新窗口验证
+
+### vps-bench — 节点测速
+
+```bash
+sudo vps-bench               # 交互选择测速脚本
+sudo vps-bench nodequality   # NodeQuality 测速
+sudo vps-bench tcpquality    # TcpQuality 测速
+```
+
+> 第三方脚本以管道方式执行（供应链风险），执行前显示来源 URL 并确认。
 
 ## 安全约定
 

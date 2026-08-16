@@ -23,7 +23,7 @@
 set -euo pipefail
 
 # ============ 版本号（发布新功能时递增，供启动检查用） ============
-VPS_TOOLS_VERSION="1.2.0"
+VPS_TOOLS_VERSION="1.3.0"
 
 # ============ 配置 ============
 GH_USER="inybit"
@@ -37,24 +37,30 @@ CMD_DIR="/usr/local/bin"                 # 命令入口目录
 VPS_TOOLS_CMD="${CMD_DIR}/vps-tools"     # 管理命令入口
 
 # ============ 工具注册表 ============
-# 每行一个工具: name|script|env_template|env_target|interactive_setup
+# 每行一个工具: name|script|env_template|env_target|interactive_setup|extra_files
 #   name        工具名（install/update/uninstall 参数）
-#   script      install.sh 里要下载的脚本文件名（相对仓库根，按分类目录组织）
+#   script      install.sh 里要下载的主脚本文件名（相对仓库根，按分类目录组织）
 #   env_template 配置模板文件名（相对仓库根，可为空 = 无配置）
 #   env_target  配置安装目标路径（env_template 为空时忽略）
 #   interactive_setup 安装后是否调用交互式 setup（1=是，工具脚本需支持 setup 子命令；
 #                     配合 systemd timer 管理定时；无 TTY 时跳过并提示手动运行）
+#   extra_files 主脚本之外的附加文件（空格分隔的相对路径清单；多文件工具如
+#               vps-init 的 lib/*.sh 和 templates/*.tpl 必须在此列出，否则安装不完整；
+#               可为空 = 单文件工具）
 # 注：定时调度统一用 systemd timer（工具脚本 setup 子命令管理），不使用 crontab。
 #
 # 分类目录约定（新增脚本按功能域归类）:
 #   monitor/   监控类（流量/资源/服务状态）
 #   network/   网络类（路由/隧道/分流）
 #   proxy/     代理类（xray/sing-box 等辅助脚本）
-#   utils/     通用工具（DDNS/证书/备份等）
+#   utils/     通用工具（DDNS/证书/初始化等）
 #   backup/    备份类
+#   bench/     测试类（测速/基准）
 TOOLS=(
-  "vnstat-monitor|monitor/vnstat-monitor/vnstat-monitor.sh|monitor/vnstat-monitor/vnstat-monitor.env.example|${CONFIG_DIR}/vnstat-monitor.env|1"
-  "xray-deploy|proxy/xray-deploy/xray-deploy.sh|||0"
+  "vnstat-monitor|monitor/vnstat-monitor/vnstat-monitor.sh|monitor/vnstat-monitor/vnstat-monitor.env.example|${CONFIG_DIR}/vnstat-monitor.env|1|"
+  "xray-deploy|proxy/xray-deploy/xray-deploy.sh|||0|"
+  "vps-init|utils/vps-init/vps-init.sh|utils/vps-init/vps-init.env.example|${CONFIG_DIR}/vps-init.env|0|utils/vps-init/lib/common.sh utils/vps-init/lib/dd.sh utils/vps-init/lib/system.sh utils/vps-init/lib/user.sh utils/vps-init/lib/ssh.sh utils/vps-init/lib/fail2ban.sh utils/vps-init/lib/ufw.sh utils/vps-init/templates/sshd-dropin.conf.tpl utils/vps-init/templates/jail.local.tpl"
+  "vps-bench|bench/vps-bench/vps-bench.sh|||0|"
 )
 
 # ============ 辅助函数 ============
@@ -110,27 +116,48 @@ list_tools() {
 
 # ============ 核心操作 ============
 install_tool() {  # $1=tool line
-  local line="$1" name script env_tpl env_tgt setup_flag
+  local line="$1" name script env_tpl env_tgt setup_flag extra_files
   name=$(tool_field "$line" 1)
   script=$(tool_field "$line" 2)
   env_tpl=$(tool_field "$line" 3)
   env_tgt=$(tool_field "$line" 4)
   setup_flag=$(tool_field "$line" 5)
+  extra_files=$(tool_field "$line" 6)
 
   local dest="${INSTALL_DIR}/${name}"
+  local script_dir
+  script_dir="$(dirname "$script")"
+  # 下载失败回滚：rm -rf 目标必须非空（防 INSTALL_DIR 误展开）
+  local dest_rm="${dest:?}"
+
   mkdir -p "$dest"
 
   log_info "下载 ${name}: ${BASE_URL}/${script}"
   if ! curl -fsSL --max-time 60 "${BASE_URL}/${script}" -o "${dest}/$(basename "$script")"; then
     log_err "下载失败: ${script}（检查网络或仓库路径）"
-    # 清理失败产生的空目录，避免残留坏状态
-    if [[ -d "$dest" ]] && [[ -z "$(ls -A "$dest" 2>/dev/null)" ]]; then
-      rmdir "$dest" 2>/dev/null || true
-    fi
+    # 清理失败产生的残留目录，避免半成品坏状态
+    rm -rf "$dest_rm"
     return 1
   fi
   chmod +x "${dest}/$(basename "$script")"
   log_info "已安装脚本: ${dest}/$(basename "$script")"
+
+  # 附加文件（多文件工具：lib/*.sh、templates/*.tpl 等，主脚本 source 依赖它们）
+  local ef ef_rel ef_dest
+  for ef in $extra_files; do
+    ef_rel="${ef#"$script_dir"/}"     # 剥掉分类前缀，保留工具目录内相对路径
+    ef_dest="${dest}/${ef_rel}"
+    mkdir -p "$(dirname "$ef_dest")"  # lib/、templates/ 子目录可能不存在（防 curl 23）
+    if ! curl -fsSL --max-time 60 "${BASE_URL}/${ef}" -o "$ef_dest"; then
+      log_err "下载失败: ${ef}（附加文件，安装不完整，已回滚）"
+      rm -rf "$dest"
+      return 1
+    fi
+    case "$ef_rel" in
+      *.sh) chmod +x "$ef_dest" ;;
+    esac
+    log_info "已安装附加文件: ${ef_dest}"
+  done
 
   # 命令入口（工具名直接调用）：wrapper → 脚本库
   mkdir -p "${CMD_DIR}"   # 命令目录可能不存在（干净系统 /usr/local/bin 也需确保）
@@ -182,7 +209,7 @@ uninstall_tool() {  # $1=tool line
   env_tgt=$(tool_field "$line" 4)
 
   if [[ -d "${INSTALL_DIR}/${name}" ]]; then
-    rm -rf "${INSTALL_DIR}/${name}"
+    rm -rf "${INSTALL_DIR:?}/${name}"
     log_info "已删除脚本目录: ${INSTALL_DIR}/${name}"
   else
     log_warn "未找到脚本目录: ${INSTALL_DIR}/${name}"
