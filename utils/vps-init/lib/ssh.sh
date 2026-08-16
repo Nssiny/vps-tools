@@ -84,11 +84,15 @@ ssh_main() {
     return 1
   fi
 
-  # ---------- 2. 随机高位端口（幂等：drop-in 已有端口则保留，重跑不换） ----------
+  # ---------- 2. 端口（幂等：实际生效端口优先保留；无显式配置才随机高位） ----------
   local ssh_port="${VPS_INIT_SSH_PORT:-}"
-  if [[ -z "$ssh_port" && -f "${VPS_INIT_DROPIN}" ]]; then
+  if [[ -z "$ssh_port" ]]; then
     ssh_port="$(get_ssh_port)"
-    [[ "$ssh_port" == "22" ]] && ssh_port=""   # 无 drop-in 端口时回落值不算数
+    # 22 可能是默认回退（无任何 Port 配置）→ 随机高位
+    if [[ "$ssh_port" == "22" ]] \
+       && ! grep -qsE '^[[:space:]]*Port[[:space:]]+[0-9]+' /etc/ssh/sshd_config "${VPS_INIT_CONF_D}"/*.conf 2>/dev/null; then
+      ssh_port="$(random_port)"
+    fi
   fi
   if [[ -z "$ssh_port" ]]; then
     ssh_port="$(random_port)"
@@ -119,6 +123,11 @@ EOF
   systemctl restart ssh sshd 2>/dev/null || systemctl restart sshd 2>/dev/null || service ssh restart 2>/dev/null || {
     log_err "SSH 服务重启失败"; return 1; }
   log_info "SSH 服务已重启（已有连接不受影响）"
+
+  # 若 UFW 已启用：放行新端口（防新端口被 deny 挡死；2026-08-16 真机）
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then
+    ufw allow "${ssh_port}/tcp" >/dev/null 2>&1 && log_info "UFW 已放行新端口 ${ssh_port}/tcp"
+  fi
 
   local ip
   ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"

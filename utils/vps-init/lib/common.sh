@@ -28,7 +28,16 @@ require_root() {
 # ---------- 配置加载（/etc/vps-init.env，可缺省） ----------
 # shellcheck disable=SC1090
 load_env() {
-  [[ -f "${VPS_INIT_ENV_FILE}" ]] && . "${VPS_INIT_ENV_FILE}" 2>/dev/null || true
+  # 外部环境变量优先：env 文件（含模板空值）不得覆盖外部传入值（2026-08-16 真机）
+  local _ext_vars _line
+  _ext_vars="$(env | grep -E '^(VPS_INIT_[A-Z_]+|SSH_PORT_[A-Z]+)=' 2>/dev/null || true)"
+  if [[ -f "${VPS_INIT_ENV_FILE}" ]]; then
+    . "${VPS_INIT_ENV_FILE}" 2>/dev/null || true
+  fi
+  while IFS= read -r _line; do
+    # shellcheck disable=SC2163  # export "NAME=value" 动态导出（NAME=value 整行）
+    [[ -n "$_line" ]] && export "$_line"
+  done <<< "$_ext_vars"
   : "${SSH_PORT_MIN:=20000}"
   : "${SSH_PORT_MAX:=60000}"
   : "${VPS_INIT_EXTRA_PORTS:=}"
