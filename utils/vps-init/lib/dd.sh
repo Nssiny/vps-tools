@@ -215,16 +215,34 @@ dd_main() {
 
   log_info "执行: ${cmd[*]}"
   "${cmd[@]}"
+  local dd_rc=$?
+  if [[ $dd_rc -ne 0 ]]; then
+    log_err "reinstall 执行失败（exit=${dd_rc}）——引导项可能未写入，请检查上方输出"
+    return $dd_rc
+  fi
 
-  log_warn "DD 已启动。安装期间可查看 reinstall 输出；完成后系统自动重启。"
-  log_warn "安装期间查看进度（reinstall 临时 Alpine 系统）："
-  log_warn "    浏览器 http://<服务器IP>:80   （reinstall 输出 While Install 段的 WEB Port，默认 80）"
-  log_warn "    ssh -p ${ssh_port} root@<服务器IP>  （临时密码见 reinstall 输出 While Install 段）"
-  log_warn "    或商家面板 VNC / 串口"
-  log_warn "重启后（约 5-15 分钟）用密钥登录新系统:"
-  log_warn "    ssh -p ${ssh_port} root@<服务器IP>"
-  log_warn "初始化将由 cloud-init 自动完成（时区/BBR/用户/SSH/UFW/Fail2Ban）。"
   if [[ "$ci_supported" -eq 0 ]]; then
     log_warn "⚠️ 本发行版不支持自动续跑，重启后请手动: vps-init"
   fi
+
+  log_warn "===================================================================="
+  log_warn "重装引导已写入（reinstall 一次性引导项）。5 秒后自动重启开始重装。"
+  log_warn "  Ctrl+C 取消（取消后运行 'sh reinstall.sh reset' 清除引导项）"
+  log_warn "重启后（约 5-15 分钟）安装期间查看进度："
+  log_warn "    浏览器 http://<服务器IP>:80   （reinstall 临时 WEB 端口，默认 80）"
+  log_warn "    ssh -p ${ssh_port} root@<服务器IP>  （临时密码见 reinstall 输出 While Install 段）"
+  log_warn "    或商家面板 VNC / 串口"
+  log_warn "安装完成后用密钥登录新系统（cloud-init 自动初始化时区/BBR/用户/SSH/UFW/Fail2Ban）:"
+  log_warn "    ssh -p ${ssh_port} root@<服务器IP>"
+  log_warn "===================================================================="
+  local i
+  for i in 5 4 3 2 1; do
+    printf "\r  %s 秒后重启... " "$i" >&2
+    sleep 1
+  done
+  echo "" >&2
+  log_warn "重启..."
+  reboot
+  # 若 reboot 未生效（无 systemd/容器），提示手动
+  log_warn "未检测到重启，请手动执行: reboot"
 }
