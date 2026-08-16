@@ -41,7 +41,7 @@
 
 set -euo pipefail
 
-VERSION="1.5.3"   # 发布新功能时递增（配合 vps-tools 工具约定：新增工具必须支持 -v/-h）
+VERSION="1.5.4"   # 发布新功能时递增（配合 vps-tools 工具约定：新增工具必须支持 -v/-h）
 
 # ============ 路径常量 ============
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -495,7 +495,7 @@ select_fallback_domain() {
   local tested=0 shown=0 delay
   for line in "${sorted[@]}"; do
     [[ "$shown" -ge 6 ]] && break
-    IFS='|' read -r _ _ dom note <<<"$line"
+    IFS='|' read -r _ dom note <<<"$line"
     result="$(test_fallback_domain "$dom")" || true   # 防 set -e：失败(return 1)会终止脚本
     tested=$((tested+1))
     if [[ "$result" == "ok" ]]; then
