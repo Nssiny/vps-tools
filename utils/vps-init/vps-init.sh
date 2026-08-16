@@ -122,6 +122,9 @@ EOF
 main() {
   local action="${1:-wizard}"
   case "$action" in
+    wizard)
+      wizard
+      ;;
     dd)
       require_root; load_env
       dd_main "${@:2}"

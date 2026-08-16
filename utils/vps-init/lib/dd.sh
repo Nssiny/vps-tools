@@ -217,6 +217,10 @@ dd_main() {
   "${cmd[@]}"
 
   log_warn "DD 已启动。安装期间可查看 reinstall 输出；完成后系统自动重启。"
+  log_warn "安装期间查看进度（reinstall 临时 Alpine 系统）："
+  log_warn "    浏览器 http://<服务器IP>:80   （reinstall 输出 While Install 段的 WEB Port，默认 80）"
+  log_warn "    ssh -p ${ssh_port} root@<服务器IP>  （临时密码见 reinstall 输出 While Install 段）"
+  log_warn "    或商家面板 VNC / 串口"
   log_warn "重启后（约 5-15 分钟）用密钥登录新系统:"
   log_warn "    ssh -p ${ssh_port} root@<服务器IP>"
   log_warn "初始化将由 cloud-init 自动完成（时区/BBR/用户/SSH/UFW/Fail2Ban）。"
